@@ -60,7 +60,7 @@ jobs:
     needs: probe
     if: needs.probe.outputs.needs_sync == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 30
     env:
       TZ: Asia/Shanghai
     steps:
@@ -76,6 +76,19 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
+
+      # pip 缓存：OCR 依赖合计体积约 285MB（其中图像处理库 112MB + 识别库 85MB +
+      #   推理运行时 43MB + 数值库 30MB + 图像库 15MB），缓存 wheel 可省掉每次 sync 的重复下载。
+      # ⚠ 缓存 key 内**不得引用 secrets.OCR_PKG_NAME**：GitHub 不允许 secret 出现在 cache key，
+      #   且那样会把包名写进缓存条目元数据，违背"包名不进仓库可见处"的设计。
+      #   故 key 只用固定标识 + Python 版本；换 OCR 依赖时手动 bump 末尾版本号即可。
+      - name: 缓存 pip
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pip
+          key: pip-ocr-py311-v1
+          restore-keys: |
+            pip-ocr-py311-
 
       - name: 安装 OCR 依赖
         run: python3 -m pip install --quiet "${{ secrets.OCR_PKG_NAME }}"
