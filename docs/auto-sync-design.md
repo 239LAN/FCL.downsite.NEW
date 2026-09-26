@@ -3,7 +3,7 @@
 > 状态：**已实施**——日期归档 + 双 job 预探测（probe→sync）架构已落地并验证通过。演进历史见 git 记录。
 > 目标：将线路1（`/data/down`）从"站长手动维护"改造为"GitHub Actions 自动更新"，保留现有网盘分发模式，站端零代码改动。
 >
-> 本文只记录**设计决策与原因**。具体实现、配置项、常量与软件映射以 `scripts/auto-sync/` 下的代码为准（`config.mjs`、`softwares.json` 等）；网盘 API 端点细节以 [`huang1111-api-notes.md`](huang1111-api-notes.md) 为准；脚本用法以 [`../scripts/auto-sync/README.md`](../scripts/auto-sync/README.md) 为准。
+> 本文只记录**设计决策与原因**。具体实现、配置项、常量与软件映射以 `scripts/auto-sync/` 下的代码为准（`config.mjs`、`softwares.json` 等）；网盘 API 端点细节以 [`huang1111-api-notes.md`](huang1111-api-notes.md) 为准；脚本用法以 [`../scripts/auto-sync/README.md`](../scripts/auto-sync/README.md) 为准；测试文件在项目外，路径：`C:\Users\XiaoluoFoxington\huang1111-api-test`。
 
 ## 1. 背景与目标
 
@@ -79,6 +79,7 @@ GHA workflow
 - 由工作流的 `schedule`（cron 按 UTC 编写）与 `workflow_dispatch` 手动触发；另有 `concurrency` 防重入。具体时间点见 `.github/workflows/auto-sync.yml`。
 - **登录凭据**以仓库 Secrets 注入，只在 sync job 中使用；probe job 完全不读凭据。
 - **验证码识别**由 OCR 完成，期望长度固定；验证码**一次性**（同码重试必败）且 OCR 存在误读率，因此失败必须**换新验证码**重试（重试上限见 `config.mjs`）。
+- **PoW 兜底**：站点已切换 `captcha_type = "pow"`，但后端**同时保留图形验证码通路**（2026-09-26 实测两条路都可用：图形验证码 3/6、PoW 6/6）。故策略为「**默认 OCR，用尽后回退 PoW**」：图形验证码重试上限耗尽后自动改走 PoW，PoW 求解为纯 WebCrypto（无需 WASM，与前端 WebCrypto 回退路径同算法）。两条路互为兜底 —— PoW 挑战被限流/失效时靠 OCR 过，OCR 误读率高时靠 PoW 过。协议细节见 [`huang1111-api-notes.md`](huang1111-api-notes.md) §0.7。
 
 ### 3.3 软件映射表
 
@@ -123,15 +124,15 @@ GHA workflow
 
 ## 4. 错误处理与恢复
 
-采用**分级重试**：验证码类失败（换新验证码）、离线下载失败（整段「提交+轮询」）、其他任何失败各自有独立的重试上限；**具体次数与超时以 [`../scripts/auto-sync/config.mjs`](../scripts/auto-sync/config.mjs) 的常量为准**。
+采用**分级重试**：验证码类失败（先换新验证码，用尽后回退 PoW）、离线下载失败（整段「提交+轮询」）、其他任何失败各自有独立的重试上限；**具体次数与超时以 [`../scripts/auto-sync/config.mjs`](../scripts/auto-sync/config.mjs) 的常量为准**。
 
 | 场景 | 处理 |
 |---|---|
 | probe job 失败 | 全部软件探测失败 → 仍输出 `needs_sync=true`（宁可多跑一次，也不遗漏）；个别失败但其他有候选 → 照常触发 sync job |
-| 登录失败（验证码/CSRF/网络） | 按分级重试；仍失败 → workflow 失败（Actions 红色即告警），下次运行自动重试 |
+| 登录失败（验证码/PoW/CSRF/网络） | 按分级重试（OCR 用尽自动回退 PoW）；仍失败 → workflow 失败（Actions 红色即告警），下次运行自动重试 |
 | 离线下载失败 | 轮询判失败；本版本跳过（不写 JSON），继续处理其余版本，退出码非 0 |
 | 会话过期（401） | 单次运行只在开始时建立会话；中途失效以错误暴露，下次运行自动重登（当前不自动重登，属已知边界） |
-| 直链获取失败（多为 OCR 误读） | 换新验证码重试；仍失败 → 该版本跳过写 JSON，下次运行重试 |
+| 直链获取失败 | 换新验证码重试，用尽后回退 PoW；仍失败 → 该版本跳过写 JSON，下次运行重试 |
 | 同版本重复触发 | 以仓库已有 index.json 为基线去重（重名跳过）；离线下载前先查目录，已含全部文件则跳过 |
 | 手动条目冲突 | 脚本只增不删 index.json 条目；手动条目原样透传 |
 | GHA 运行超时 | probe/sync job 各有 `timeout-minutes` 兜底（见 workflow）；未完成的版本下次运行续跑 |
@@ -142,7 +143,8 @@ GHA workflow
 |---|---|---|
 | 网盘 API 是逆向产物，可能变更 | 中 | 所有调用集中在 `h1api.mjs` 一处，变更时只改封装；仓库记录 API 验证快照（见 `huang1111-api-notes.md`） |
 | 登录凭据存于 Actions secret | 中 | secret 权限最小化；账号密码可随时在网盘端改密作废 |
-| 验证码 OCR 失败率 | 低 | 换新验证码重试兜底；持续失败触发告警 |
+| 验证码 OCR 失败率 | 低 | 换新验证码重试兜底，用尽后自动回退 PoW（实测 6/6）；持续失败触发告警 |
+| 站点再次变更验证机制（如强制 PoW、换协议） | 中 | 验证逻辑集中在 `h1api.mjs` 的 `verifyThenPost` + `login`/`getSources` 两处；协议常量（`POW_PROTOCOL` / `POW_DOMAIN_STRING`）已显式命名并带注释，变更时改这一处；人工复核方法见 `huang1111-api-notes.md` §0.7 |
 | 离线下载依赖网盘服务器访问 GitHub 的连通性 | 中 | 已验证可用；失败重试；必要时可配置代理前缀 |
 | GHA API 限流 | 低 | 调用量极小（每软件 1 次 releases + 少量网盘接口调用） |
 | 站端 JSON 结构被脚本改坏 | 低 | 生成后本地校验（JSON 可解析、URL 前缀、index 与版本文件一致），校验不过不提交 |

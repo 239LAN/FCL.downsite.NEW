@@ -17,7 +17,8 @@ export const ENV = {
 
 // 重试策略
 export const RETRY = {
-  CAPTCHA_ATTEMPTS: 10, // 验证码类失败（登录、取直链）：每次换新验证码，最多 10 次
+  CAPTCHA_ATTEMPTS: 10, // 图形验证码类失败（登录、取直链）：每次换新验证码，最多 10 次
+  POW_ATTEMPTS: 3,      // 图形验证码用尽后回退 PoW：每次换新挑战，最多 3 次
   DOWNLOAD_ATTEMPTS: 3, // 离线下载失败：整段「提交+轮询」最多 3 次
   GENERIC_ATTEMPTS: 2,  // 其他任何失败（网络/接口异常）：最多 2 次
 };

@@ -99,7 +99,9 @@ async function syncVersion(sw, version, release) {
     .map((w) => w.name);
   if (missing.length) throw new Error(`目录中缺少或 size 不匹配的文件：${missing.join(', ')}`);
 
-  // 4) 批量取直链（验证码重试 ≤10 在 h1api 内）
+  // 4) 批量取直链（默认图形验证码 ≤10，用尽回退 PoW ≤3 在 h1api 内）
+  //    响应含 url 与 short_url（2026-09-26 站长确认二者等价：short_url 只是少了末尾文件名段）。
+  //    站端 JS 用完整 url，这里保持一致只取 url；两者都满足下方 /f/ 前缀校验。
   const ids = wantFiles.map((w) => fileMeta.get(w.name).id);
   const sources = await h1.getSources(ids, log);
   const urlById = new Map(sources.map((s) => [s.id, s.url]));
