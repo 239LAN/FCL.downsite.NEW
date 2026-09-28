@@ -1,0 +1,27 @@
+[
+  {
+    "arch": "all",
+    "url": "https://pan.huang1111.cn/f/dwZNfW/ZalithLauncher-2.6.1.apk",
+    "size": 354552390
+  },
+  {
+    "arch": "arm64-v8a",
+    "url": "https://pan.huang1111.cn/f/yKNoCV/ZalithLauncher-2.6.1-arm64-v8a.apk",
+    "size": 181469527
+  },
+  {
+    "arch": "armeabi-v7a",
+    "url": "https://pan.huang1111.cn/f/jXjbfV/ZalithLauncher-2.6.1-armeabi-v7a.apk",
+    "size": 173388198
+  },
+  {
+    "arch": "x86",
+    "url": "https://pan.huang1111.cn/f/1Z7ku4/ZalithLauncher-2.6.1-x86.apk",
+    "size": 161926048
+  },
+  {
+    "arch": "x86_64",
+    "url": "https://pan.huang1111.cn/f/PMb5Fq/ZalithLauncher-2.6.1-x86_64.apk",
+    "size": 187298808
+  }
+]
