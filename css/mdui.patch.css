@@ -70,8 +70,19 @@ html[data-xf-theme="dark"] .mdui-panel-item {
   right: 12px;
 }
 
-.mdui-panel-item-open>.mdui-panel-item-body {
+/* MDUI把下拉菜单直接塞在select里面，面板体一裁它就被切掉。
+   所以只让带下拉的面板放行，其余面板继续裁着，免得展开动画时内容糊到下一项上。
+   委屈一下动画强迫症吧（（（
+   哪天又有组件要往外钻，在这行 :has() 里加上它就行。 */
+.mdui-panel-item-open>.mdui-panel-item-body:has(.mdui-select) {
   overflow: unset;
+}
+
+/* 旧浏览器不认 :has()，那就退回以前那样全都放行，总比下拉被切了强。 */
+@supports not selector(:has(*)) {
+  .mdui-panel-item-open>.mdui-panel-item-body {
+    overflow: unset;
+  }
 }
 
 .mdui-panel-item-body {
