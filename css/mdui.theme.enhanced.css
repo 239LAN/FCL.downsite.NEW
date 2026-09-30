@@ -137,6 +137,58 @@ body.mdui-theme-primary-yellow {
   --mdui-bg-dark: var(--mdui-color-yellow-950);
 }
 
+/* 强调色变量。MDUI 原版没有 CSS 变量，只是用类把强调色涂到 .mdui-color-theme-accent 上，
+ * 所以本站样式想跟着强调色走只能自己补一个（变量名沿用 MDUI v2 的叫法，将来升级不用改）。
+ * 以下 16 个色值抄自 mdui 1.0.2 的 `.mdui-theme-accent-<色> .mdui-color-theme-accent`，与主题设置页的可选项一一对应。 */
+body.mdui-theme-accent-amber {
+  --mdui-color-theme-accent: #FFD740;
+}
+body.mdui-theme-accent-blue {
+  --mdui-color-theme-accent: #448AFF;
+}
+body.mdui-theme-accent-cyan {
+  --mdui-color-theme-accent: #18FFFF;
+}
+body.mdui-theme-accent-deep-orange {
+  --mdui-color-theme-accent: #FF6E40;
+}
+body.mdui-theme-accent-deep-purple {
+  --mdui-color-theme-accent: #7C4DFF;
+}
+body.mdui-theme-accent-green {
+  --mdui-color-theme-accent: #69F0AE;
+}
+body.mdui-theme-accent-indigo {
+  --mdui-color-theme-accent: #536DFE;
+}
+body.mdui-theme-accent-light-blue {
+  --mdui-color-theme-accent: #40C4FF;
+}
+body.mdui-theme-accent-light-green {
+  --mdui-color-theme-accent: #B2FF59;
+}
+body.mdui-theme-accent-lime {
+  --mdui-color-theme-accent: #EEFF41;
+}
+body.mdui-theme-accent-orange {
+  --mdui-color-theme-accent: #FFAB40;
+}
+body.mdui-theme-accent-pink {
+  --mdui-color-theme-accent: #FF4081;
+}
+body.mdui-theme-accent-purple {
+  --mdui-color-theme-accent: #E040FB;
+}
+body.mdui-theme-accent-red {
+  --mdui-color-theme-accent: #FF5252;
+}
+body.mdui-theme-accent-teal {
+  --mdui-color-theme-accent: #64FFDA;
+}
+body.mdui-theme-accent-yellow {
+  --mdui-color-theme-accent: #FFFF00;
+}
+
 /* 浅色模式 - 统一应用背景色 */
 body[class*="mdui-theme-primary-"] {
   background-color: var(--mdui-bg) !important;
