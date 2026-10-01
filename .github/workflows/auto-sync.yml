@@ -4,17 +4,16 @@
 #       留出约 1 小时给 GitHub Release 成型，同时用 :55 分避开整点调度高峰。
 #
 # 说明：
-#   - 先 probe 后 sync：probe job 只跑 checkout + node 20 + 预探测（不登录、不动网盘），
-#     全部软件均已是最新时，sync job 完全不调度（连 Python/OCR 安装都跳过）
-#   - OCR 依赖包名通过仓库 Secret OCR_PKG_NAME 传入，不在 workflow 明文出现
+#   - 先 probe 后 sync：probe job 只跑 checkout + node 24 + 预探测（不登录、不动网盘），
+#     全部软件均已是最新时，sync job 完全不调度（容器都不拉起）
+#   - 站点自 2026-10-02 起改为 captcha policy v2，图形验证码通路已被后端下线，
+#     验证全靠 PoW（算法未变），故**不再需要 Python / pip / OCR 依赖**
 #   - 提交消息格式 `[GHA] 新增：内容：数据源：资源id-{id}：{版本列表&分隔}呜~` 由脚本生成，
 #
 # 需要配置仓库 Secrets：
 #   H1111_USER      — huang1111 登录账号
 #   H1111_PASSWORD  — huang1111 登录密码
-#   OCR_PKG_NAME    — OCR 依赖 pip 包名（pip install 用 + 运行时注入）
-#   OCR_CLS_NAME    — OCR 依赖类名（运行时注入）
-#   （包名/类名全部只存 Secret 并运行时注入，仓库任何代码内均不出现明文）
+#   （OCR_PKG_NAME / OCR_CLS_NAME 已废弃，可删除）
 
 name: 线路1自动同步
 
@@ -67,31 +66,10 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 设置 Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
       - name: 设置 Node
         uses: actions/setup-node@v4
         with:
           node-version: '24'
-
-      # pip 缓存：OCR 依赖合计体积约 285MB（其中图像处理库 112MB + 识别库 85MB +
-      #   推理运行时 43MB + 数值库 30MB + 图像库 15MB），缓存 wheel 可省掉每次 sync 的重复下载。
-      # ⚠ 缓存 key 内**不得引用 secrets.OCR_PKG_NAME**：GitHub 不允许 secret 出现在 cache key，
-      #   且那样会把包名写进缓存条目元数据，违背"包名不进仓库可见处"的设计。
-      #   故 key 只用固定标识 + Python 版本；换 OCR 依赖时手动 bump 末尾版本号即可。
-      - name: 缓存 pip
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/pip
-          key: pip-ocr-py311-v1
-          restore-keys: |
-            pip-ocr-py311-
-
-      - name: 安装 OCR 依赖
-        run: python3 -m pip install --quiet "${{ secrets.OCR_PKG_NAME }}"
 
       - name: 运行自动同步
         id: sync
@@ -99,8 +77,6 @@ jobs:
         env:
           H1111_USER: ${{ secrets.H1111_USER }}
           H1111_PASSWORD: ${{ secrets.H1111_PASSWORD }}
-          OCR_PKG_NAME: ${{ secrets.OCR_PKG_NAME }}
-          OCR_CLS_NAME: ${{ secrets.OCR_CLS_NAME }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 汇总失败标记

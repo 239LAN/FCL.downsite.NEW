@@ -1,9 +1,10 @@
 # huang1111 网盘 API 逆向解析（Cloudreve v3 定制版）
 
-> 状态：站点已切换 `captcha_type = "pow"`（PoW 上线），**图形验证码通路后端仍然保留**，两条路均可用于登录/取直链；2026-09-26 实测复核通过
-> 记录日期：2026-08-25（3.8.5 重测 2026-08-26；2026-08-28 全面复核并修订过时/错误项 + 扩展新端点；**2026-09-26 新增 PoW 协议章节，修订 §0.3 / §3.1 的验证方式**）
-> 来源：真实登录态会话实测 + 前端 JS bundle 分析（`pan.huang1111.cn/static/js/`）
+> 状态：站点已升级为 **captcha policy v2**（2026-10-02 实测）。旧的「图形验证码 captchaCode」与「裸 PoW powPayload」两条通路**全部作废**；现为「41700 挑战 → PoW → policy 许可 → permit 重发」两段式
+> 记录日期：2026-08-25（3.8.5 重测 2026-08-26；2026-08-28 全面复核并修订过时/错误项 + 扩展新端点；2026-09-26 新增 PoW 协议章节；**2026-10-02 重写 §0.3 / §0.6 / §0.7 为 captcha policy v2**）
+> 来源：真实登录态会话实测 + 前端 JS bundle 分析（`pan.huang1111.cn/static/js/`，版本 `3.8.7`）
 > 范围：仅收录已实测端点；"已失效/未实测"见 §9
+> 复核：站点若再改验证机制，用项目外测试目录里的 `_probe-v2-*.mjs` 探针快速确认（路径与用法见 [`auto-sync-design.md`](auto-sync-design.md) 开头）。返回 `41709` 多半是协议头/版本变了。
 
 ---
 
@@ -21,34 +22,84 @@ https://pan.huang1111.cn/api/v3
 - 未登录 / cookie 过期 → `code: 401`（"Login required"）
 - 登录用户信息同时存于 `localStorage.user`（JSON），含 `id`、`user_name`、`nickname`、`group`
 
-### 0.3 登录（账号密码 + 验证码/PoW + CSRF）
+### 0.3 登录（账号密码 + captcha policy v2 验证 + CSRF）
 
-登录**必须**先取验证码（或 PoW 挑战）再 POST，且所有写请求都要带 CSRF 头（见 §0.4）。完整流程：
+> ⚠️ **2026-10-02 起验证协议换版**。下面这套流程是当前唯一可用路径；旧的 `captchaCode` / `powPayload` 字段已彻底失效。
+
+**前置条件（两条都必须满足，否则必然失败）**
+
+1. **所有请求**都要带请求头 `X-Cloudreve-Captcha-Protocol: 2`。
+   缺失（或值为 `1`）→ 一律 HTTP 200 + `code: 41709`「Please update this page to use the new verification. / 请更新页面后使用新版验证。」
+2. **必须携带全部 cookie**：`cloudreve-session` + `cloudreve_observer` + `cloudreve_send`。
+   只带 `cloudreve-session` 时 `POST /site/captcha/policy` 恒返回 `41701`（实测，见下方对照表）。
+   > 旧版本文档写的「`cloudreve_observer` 实测非必需」**已失效**。
+
+**完整流程（挑战 → 许可）**
 
 ```
-① GET  /site/captcha?_=<时间戳>      → 图形验证码：data: "data:image/png;base64,..." + Set-Cookie 会话
-   GET  /site/captcha/pow?purpose=login → PoW 挑战（见 §0.7）
-② GET  /site/config                  → 响应头 x-csrf-token（用于下面 POST）
-③ POST /user/session                 → body {userName, Password, captchaCode} 或 {userName, Password, powPayload}
+① POST /user/session（或 POST /file/source）
+   带 X-Cloudreve-Captcha-Protocol: 2 + CSRF + 全部 cookie
+   body: { userName, Password }        // 注意：不再有 captchaCode / powPayload
+
+② 若需要验证 → HTTP 200 + code=41700，**policy 对象直接内嵌在响应 data 里**
+   {
+     "code": 41700,
+     "data": {
+       "id": "a1fc2e10…",                       // policy id，即后续的「许可」
+       "purpose": "login",
+       "required": { "interactive": 0, "pow": "compatible", "level": 0, "reason": "normal" },
+       "revision": "a4588c6eadc3d0f9",
+       "expires": 1790874379,
+       "pow": { …PoW 挑战，见 §0.7… },           // 注意：token 已绑定该 policy.id
+       "interactive_done": true,                // required.interactive=0 时直接为 true，无需滑块
+       "pow_done": false,
+       "ready": false
+     },
+     "msg": "Additional verification required. …"
+   }
+
+③ 解 PoW（算法与上一版一致，见 §0.7）→ 提交许可
+   POST /api/v3/site/captcha/policy
+   { "id": "<policy.id>", "pow_payload": "{\"token\":\"…\",\"counter\":123}" }
+   → { "code": 0, "data": { …同结构…, "pow_done": true, "ready": true }, "msg": "" }
+   ⚠ 字段名是 **`pow_payload`（下划线）**，值是 JSON.stringify 后的**字符串**；
+     **不是** `powPayload`，**不是** `captchaCode`，**不是**嵌套对象。
+   ⚠ 响应里的 `data.id` 与请求的 `id` **相同**（不轮换）。
+
+④ 重发原请求，附加请求头 `X-Cloudreve-Captcha-Permit: <policy.id>`
+   → 这才拿到真实业务结果（成功，或 40020 账号密码错误等终态码）
 ```
 
-- **验证方式二选一**（2026-09-26 起站点 `captcha_type = "pow"`，但**后端两条通路都保留**，`pow_fallback: true`）：
-  - **图形验证码**：4 位字符 PNG（base64 in `data`）。识别结果需 `.upper()` + 过滤非 ASCII 字母数字，长度必须为 4，否则重取重试
-  - **PoW**：见 §0.7，实测 6/6 成功率；图形验证码受 OCR 准确率限制，实测 3/6
-- 两种方式的**提交字段名不同**：
-  - 图形验证码 → `captchaCode: "ABCD"`
-  - PoW → `powPayload: '{"token":"...","counter":123}'`（JSON 字符串）
-- **失败重试**：`code: 40026`（Verification failed）多为验证码识别错误或 PoW 校验失败，重试时重新 GET 新验证码/新挑战（图形验证码一次性，且 GET captcha 可能**轮换会话 cookie**——必须用新 cookie 重新 GET /site/config 拿新 CSRF，再 POST）
-- 登录成功响应 `data.user_name` / `nickname` / `group` 可确认身份等级
+- 对应前端实现：webpack module 197 的 `ensure()`（`param` 注册 + `captchaParamsRef`）+ axios 响应拦截器对 `41700` 的自动重试（最多 2 次），拦截器会给重发请求补上 `X-Cloudreve-Captcha-Permit`
+- 单独调用 `GET /site/captcha/pow?purpose=…` 仍返回 200 且带 `token`，但**该 token 未绑定 policy**，**不能**用于 `POST /site/captcha/policy` —— 必须用 41700 内嵌的 `data.pow`（实测见 §0.7 🔑）
+- `interactive_done`/`pow_done` 都是 `required` 的**完成标记**，不是"要不要做"
 
-> `scripts/auto-sync/h1api.mjs` 的策略：默认图形验证码（最多 10 次），用尽后自动回退 PoW（最多 3 次）。
+**许可（permit）的生命周期（实测，2026-10-02）**
+
+- **可复用**：同一 `policy.id` 作为 `X-Cloudreve-Captcha-Permit` 连续重发 3 次，均被接受（都进入业务层返回 `40020`/`40001`），**不是一次性的**
+- **有时效**：policy 的 `expires`（实测签发后约 1200s）过期后需重新走验证链路
+- ⚠️ 前端只在**单个请求**层面复用它（拦截器原地重发），**未实测跨 purpose 复用**（`login` 的许可拿去发 `/file/source`）。若要省 PoW 求解开销，需自行实测确认；`h1api.mjs` 采取保守策略，**每个 endpoint 各自走完整链路**
+- ⚠️ **`POST /file/source` 的登录态校验发生在验证之前**：未登录时直接 `401 Login required`，根本不会回 `41700`。故测试验证链路时若拿到 `401`，应先确认会话是否有效，而不是去查验证协议
+
+**cookie 对照表（实测，2026-10-02）**
+
+| 携带的 cookie | `POST /site/captcha/policy` | `X-Cloudreve-Captcha-Permit` 重发 |
+|---|---|---|
+| 仅 `cloudreve-session` | `41701` 验证失败 | `41701` |
+| 全量（session + observer + send） | `0`，`ready: true` | 成功进入业务层（实测拿到 `40020`） |
 
 ### 0.4 CSRF（3.8.5 新增，所有写请求必须）
 
 - **`GET /site/config` 是唯一已确认的 `x-csrf-token` 响应头来源**；另有一条等价通道：浏览器会话 cookie 里的 `_csrf` cookie（两者取一即可）
 - 写请求（POST/PUT/DELETE）需带 `X-CSRF-Token: <token>` 头，并附 `Origin` / `Referer`（`https://pan.huang1111.cn`）
-- 实测 `GET /site/config` **不会**轮换 cookie/token；同一 token 可复用于多次写请求；但登录或 GET captcha 轮换会话 cookie 后必须重取
+- 实测 `GET /site/config` **不会**轮换 cookie/token；同一 token 可复用于多次写请求；但登录或验证链路轮换会话 cookie 后必须重取
 - 漏带/带旧 token 的写请求 → `code: 40026`（Verification failed）
+
+### 0.4b 请求头 `X-Cloudreve-Captcha-Protocol`（2026-10-02 新增，**所有请求必带**）
+
+- 前端 axios 请求拦截器对**每个**请求无条件加上 `X-Cloudreve-Captcha-Protocol: 2`
+- 缺失或值不为 `2`（实测 `1` 也不行）→ 一律 `code: 41709`「Please update this page to use the new verification. / 请更新页面后使用新版验证。」
+- ⚠️ 这是旧脚本全线失败的直接原因：认证端点在缺此头时**根本不会进入验证流程**，无论提交什么验证字段都是 `41709`
 
 ### 0.5 响应信封（所有 API 统一）
 
@@ -73,23 +124,33 @@ https://pan.huang1111.cn/api/v3
 | 40008 | 站点配置缺失/异常 |
 | 40016 | 路径不存在 / 对象不存在（Path not exist / Object not exist） |
 | 40020 | 账号或密码错误（Wrong password or email address）—— **真终态，重试无意义** |
-| 40026 | 验证失败（Verification failed）：**图形验证码**校验失败 / 会话轮换后用旧 cookie / 漏带或带旧 CSRF token / 完全不带验证字段 |
-| 40027 | 验证失败（Verification failed）：**PoW** 校验失败 —— counter 错误、token 的 purpose 不符、`powPayload` 非法。msg 文案与 40026 相同，**只能靠 code 区分** |
+| 40026 | 验证失败（Verification failed）：**旧版图形验证码**校验失败 / 会话轮换后用旧 cookie / 漏带或带旧 CSRF token。**2026-10-02 起该通路已作废**，仅在漏带 CSRF 时仍可能见到 |
+| 40027 | 验证失败（Verification failed）：**旧版 PoW** 校验失败。**2026-10-02 起已作废**（PoW 改为走 `/site/captcha/policy`） |
+| 41700 | **需要验证**：响应 `data` 内嵌 policy 对象（见 §0.3 ②） |
+| 41701 | **许可提交被拒**：token 未绑定该 policy / counter 错误 / cookie 不全（见 §0.3 cookie 对照表） |
+| 41702 | **限流/冷却**：`data.retry_after` 秒后重试 |
+| 41703 | 需要验证但验证组件未就绪（前端语义） |
+| 41704 | 用户取消验证（前端语义） |
+| 41705 | 前一个验证请求尚未完成（前端语义） |
+| 41706 | 验证挑战已过期 |
+| 41708 | 验证尝试已耗尽 |
+| 41709 | **协议版本不符**：缺 `X-Cloudreve-Captcha-Protocol: 2` 头（见 §0.4b） |
 | 40058 | 分享 key 无效（`GET /share/info/{key}`、`GET /share/readme/{key}`） |
 
-### 0.7 Proof-of-Work（PoW）验证 — `/site/captcha/pow`
+### 0.7 Proof-of-Work（PoW）验证 — `/site/captcha/pow` 与 `/site/captcha/policy`
 
-> 2026-09-26 新增。站点 `site_config` 已切换为 `captcha_type = "pow"`、`pow_protocol = "cloudreve-pow-v1"`。
+> 2026-09-26 新增 PoW 章节；**2026-10-02 起 PoW 不再直接提交给业务端点**，而是先换取 policy 许可（见 §0.3）。
 > 来源：前端 bundle（`main.*.chunk.js`、`cloudreve-pow.*.worker.js`）逆向 + 真实账号实测（登录、取直链均跑通）。
 
-**① 取挑战**
+**① 取挑战（两种来源，务必分清）**
 
 ```
-GET /api/v3/site/captcha/pow?purpose=<purpose>&_=<时间戳>
+GET /api/v3/site/captcha/pow?purpose=<purpose>&_=<时间戳>     ← 独立挑战，**不能**直接用于 policy 提交
+POST /api/v3/user/session 等任意需验证的请求 → 41700 响应 data.pow  ← **应使用这一份**
 ```
 
 - `purpose` 取值（实测）：`login`（登录）、`direct_link`（取直链）
-- ⚠️ 响应是**扁平 JSON 对象**，**没有** `{code, data, msg}` 信封：
+- ⚠️ `GET /site/captcha/pow` 响应是**扁平 JSON 对象**，**没有** `{code, data, msg}` 信封：
 
 ```jsonc
 {
@@ -110,10 +171,29 @@ GET /api/v3/site/captcha/pow?purpose=<purpose>&_=<时间戳>
 }
 ```
 
-- 该响应会下发 `cloudreve_observer` cookie，但**实测非必需**：只带 `cloudreve-session` 提交同样成功
+**🔑 token 绑定（2026-10-02 实测，关键坑）**
+
+两种来源的 JWT 载荷不同 —— 41700 内嵌的那份**多一个 `binding` claim**：
+
+```jsonc
+// 41700 内嵌：token 与 policy.id 绑定
+{ "binding": "8fd60a506439af32…", "v": 1, "protocol": "cloudreve-pow-v1", … }
+// 独立 GET：**无** binding
+{ "v": 1, "protocol": "cloudreve-pow-v1", … }
+```
+
+对**全新未满足**的 policy 提交许可时（已排除"policy 已被满足"的干扰）：
+
+| 提交用的 token | `POST /site/captcha/policy` |
+|---|---|
+| 41700 内嵌（含 `binding`） | `code: 0`，`ready: true` ✅ |
+| 独立 GET 拿到（无 `binding`） | `41701` 验证失败 ❌ |
+
+→ **必须用 41700 响应 `data.pow` 里的 token**，单独 GET 的 token 一律无效。
+
 - 另有批量端点 `POST /site/captcha/pow/batch`（body `{purposes:[...]}`），**实测恒返回 `400 {"error":"challenge unavailable"}`**，不可用
 
-**② 求解**（纯 WebCrypto 即可，无需 WASM）
+**② 求解**（纯 WebCrypto 即可，无需 WASM；**算法自 2026-09-26 起未变**）
 
 ```
 password = "Cloudreve-PoW/v1" || 0x00 || nonce            // 域分隔串 + 0x00 + nonce
@@ -125,37 +205,37 @@ for counter in 0 .. counterLimit-1:
 
 - ⚠️ **易错点**：密码域分隔串是 **`Cloudreve-PoW/v1`（大驼峰）**，与 `challenge.protocol` 里的小写 `cloudreve-pow-v1` **不是同一个字符串**。混用会导致求解在 `counterLimit` 内永远找不到答案
 - 前端另有 WASM SIMD 实现（`search4`，一次算 4 个 counter 用于加速），但**算法等价**，纯 JS/WebCrypto 结果一致
-- 实测求解耗时 **6.8~12.5s**；`counterLimit` 5000、有效期 1200s，余量充足
 
-**③ 提交**
+**③ 提交（换取许可，不是直接提交给业务端点）**
 
 ```jsonc
-// 登录
-POST /api/v3/user/session
-{ "userName": "...", "Password": "...", "powPayload": "{\"token\":\"eyJ2...\",\"counter\":2606}" }
-
-// 取直链
-POST /api/v3/file/source
-{ "items": ["文件id"], "powPayload": "{\"token\":\"eyJ2...\",\"counter\":2606}" }
+POST /api/v3/site/captcha/policy
+{ "id": "<policy.id>", "pow_payload": "{\"token\":\"eyJ2...\",\"counter\":2606}" }
+→ { "code": 0, "data": { …, "pow_done": true, "ready": true }, "msg": "" }
 ```
 
-- ⚠️ 字段名是 **`powPayload`**，值是 `JSON.stringify({token, counter})` 后的**字符串**（不是嵌套对象）
-- 仍需 CSRF 头（见 §0.4）
-- 校验失败 → **`code: 40027`**（注意与图形验证码的 `40026` **不同**，见 §0.6）
-- **仅登录与取直链需要 PoW**；建目录/列目录/离线下载/删除等写请求仍只需 CSRF（2026-09-26 实测全绿）
+- ⚠️ 与旧版的**字段名差异**：旧版直接 POST 业务端点 + `powPayload`（驼峰）；新版 POST `/site/captcha/policy` + **`pow_payload`（下划线）**，值是 JSON 字符串
+- 提交许可后**仍需**带 `X-Cloudreve-Captcha-Permit: <policy.id>` 重发原请求，才真正完成登录/取直链（见 §0.3 ④）
+- 校验失败 → **`41701`**（注意与旧版的 `40026`/`40027` 不同，见 §0.6）
+- **仅登录与取直链需要验证**；建目录/列目录/离线下载/删除等写请求仍只需 CSRF（实测全绿）
 
-**验证失败码对照（实测，2026-09-26）**
+**验证失败码对照（实测，2026-10-02）**
 
 | 场景 | code |
 |---|---|
-| 图形验证码错误 / 不带任何验证字段 | `40026` |
-| PoW counter 错误 | `40027` |
-| PoW token 的 purpose 不符（如用 login 的 token 取直链） | `40027` |
-| `powPayload` 非法 JSON | `40027` |
+| 缺 `X-Cloudreve-Captcha-Protocol: 2` 头（或值不是 2） | `41709` |
+| 需验证（拿到 policy） | `41700` |
+| 许可提交被拒（token 未绑定 / counter 错 / cookie 不全） | `41701` |
+| 限流/冷却（`data.retry_after` 秒后重试） | `41702` |
+| 需要交互式验证但前端未就绪 | `41703` |
+| 用户取消 / 验证未就绪 | `41704` / `41705` |
+| 挑战已过期 / 已耗尽 | `41706` / `41708` |
 | 账号或密码错误 | `40020`（终态） |
 | 密码为空 | `40001`（终态） |
+| 旧版图形验证码失败码（**已作废**） | `40026` |
+| 旧版 PoW 校验失败码（**已作废**） | `40027` |
 
-> ⚠️ 若调用方只把 `40026` 当"验证失败"，PoW 的 `40027` 会被误判成"未知错误"而放弃重试 —— **这正是改造中踩到的坑**，见 §10。
+> ⚠️ 若调用方只把 `40026` 当"验证失败"，会漏掉新版全部 `417xx` 码 —— **这正是 2026-10-02 改造中踩到的坑**，见 §10。
 
 ---
 
@@ -308,21 +388,21 @@ Content-Type: application/json
 ```
 POST /api/v3/file/source
 Content-Type: application/json
+X-Cloudreve-Captcha-Protocol: 2
 
 {
-  "items": ["zdobenu1"],        // 文件 id 数组（来自 §2.1 的 objects[].id）
-  "captchaCode": "XXXX"         // 图形验证码；或改用 "powPayload": '{"token":"...","counter":N}'
+  "items": ["zdobenu1"]        // 文件 id 数组（来自 §2.1 的 objects[].id）
 }
 ```
 
-- 头部必需：`X-CSRF-Token`（见 §0.4）
+- 头部必需：`X-Cloudreve-Captcha-Protocol: 2`（见 §0.4b）+ `X-CSRF-Token`（见 §0.4）
 - ⚠️ **`items` 是文件 id 数组，不是路径**
 - ⚠️ **接口本身需要登录态**（未登录 → `code: 401`）；生成的直链 URL（`/f/{code}/{name}`）才是公共可访问、无需登录的
-- ⚠️ 3.8.5 起需带验证码；**2026-09-26 起站点默认 PoW**，两种方式实测**均可用**：
-  - 图形验证码：`captchaCode`（大写 + 过滤非字母数字，期望长度 4）—— 实测 3/6（受 OCR 准确率限制）
-  - PoW：`powPayload`（见 §0.7，`purpose=direct_link`）—— 实测 6/6
-  - 两者均**一次性**：每次校验（无论对错）后即作废，**同码/同 token 重试必败**（40026）；失败只能换新的
-- 若 session 在登录后被轮换过，需先重取 captcha/挑战 + 重新 `GET /site/config`
+- ⚠️ **登录态校验先于验证**：未登录时直接 `401`，**不会**返回 `41700`（实测）
+- ⚠️ **2026-10-02 起验证走 captcha policy v2**（`purpose=direct_link`），**不再有 `captchaCode`/`powPayload` 字段**：
+  - 已登录状态下直接 POST 会得到 `code: 41700` + 内嵌 policy，需按 §0.3 ②~④ 换取许可后带 `X-Cloudreve-Captcha-Permit` 重发
+  - 实测 `required.interactive = 0`（无需滑块），故可全自动完成
+- 首次会话轮换后需重新 `GET /site/config` 取 CSRF
 
 实测响应：
 
@@ -588,8 +668,9 @@ Content-Type: application/json
 | `GET /webdav/accounts` | WebDAV 账号列表（返回 `{accounts, folders}`） |
 | `GET /vas/product` | 当前生效的增值套餐（如 VIP2 年付） |
 | `GET /vas/activity` | 活动列表（数组） |
-| `GET /site/config` | 站点配置 + CSRF 来源（见 §0.4） |
-| `GET /site/captcha` | 图形验证码（见 §0.3） |
+| `GET /site/config` | 站点配置 + CSRF 来源（见 §0.4）；含 `captcha_policy` / `captcha_type` / `pow_protocol` / `pow_fallback` |
+| `GET /site/captcha` | 图形验证码。**仍返回 200 + PNG，但 2026-10-02 起后端已不接受其校验结果**（已作废，勿用） |
+| `POST /site/captcha/policy` | 提交 PoW 换取验证许可（见 §0.3 ③）；无 `{code,data}` 信封以外形式的 GET（`GET` → 404） |
 | `POST /tag/filter` | 创建标签（body `{expression,name,color,icon}`） |
 | `POST /tag/link` | 给路径打标签（body `{path,name}`） |
 | `DELETE /tag/{id}` | 删除标签 |
@@ -640,12 +721,16 @@ Content-Type: application/json
 | **DELETE /object/{id}** | 404 | 删除是 **`DELETE /object`**，body 传 `{items:[文件id], dirs:[目录id]}`（§4.1） |
 | **dirs 传目录名** | `40016` | `dirs` 必须传**目录 id**（来自 §2.1 `.data.parent`） |
 | **目录路径多前导斜杠** | `directory//xxx` → `40016` | 路径去前导 `/` |
-| **file/source 漏验证码/CSRF** | `40026` 类 | 需 `captchaCode`（图形验证码）或 `powPayload`（PoW）+ `X-CSRF-Token`（§3.1） |
-| **file/source 验证码一次性 + OCR 误读** | 偶发 `40026`；**同码重试必败** | 失败**换新验证码**重试（上限 10 次）；OCR 长度≠4 直接换图。或改用 PoW（§0.7） |
+| **file/source 漏验证码/CSRF** | `40026` 类 | 新版需 `X-Cloudreve-Captcha-Protocol: 2` + `X-CSRF-Token` + 许可证（§3.1、§0.3） |
+| **（2026-10-02 主坑）全线 `41709`「请更新页面后使用新版验证」** | 无论怎么改验证字段都是 41709，PoW 解得再对也没用 | 请求缺 **`X-Cloudreve-Captcha-Protocol: 2`** 头。站点换成了 captcha policy v2，认证端点在缺此头时**根本不进入验证流程**（§0.4b） |
+| **`GET /site/captcha` 还能出图，但图形验证码永远过不了** | 提交 `captchaCode` 只回 `41700`，OCR 再准也没用 | 图形验证码通路**已被后端下线**；该端点仅剩出图能力。只能用 PoW（§0.3） |
+| **`POST /site/captcha/policy` 恒 `41701`** | counter 解对了、token 也是 41700 内嵌的，仍验证失败 | **cookie 不全**：必须带 `cloudreve-session` + `cloudreve_observer` + `cloudreve_send`。旧文档「observer 非必需」已失效（§0.3 cookie 对照表） |
+| **提交许可换成独立 GET 的 PoW token** | `41701` | 41700 内嵌 token 含 `binding` claim（绑定 policy.id），独立 `GET /site/captcha/pow` 的**没有**。必须用 41700 的 `data.pow`（§0.7 🔑） |
+| **许可字段名写成 `powPayload`** | `41701` | 新版是 **`pow_payload`（下划线）**，且提交到 `/site/captcha/policy` 而**不是**业务端点（§0.7 ③） |
+| **拿到许可后不加重发头** | 仍然 `41700` | 必须带 **`X-Cloudreve-Captcha-Permit: <policy.id>`** 重发原请求才生效（§0.3 ④） |
+| **把"需要验证"当成"账号密码错"** | 误判为凭据问题反复排查 | `41700` 是「需要验证」的正向信号；真正的凭据错误是 `40020`，只会在**带许可重发**后出现 |
 | **PoW 求解永远找不到答案** | `counterLimit` 内无一命中 | 密码域分隔串是**大驼峰 `Cloudreve-PoW/v1`**，不是 `challenge.protocol` 的小写 `cloudreve-pow-v1`（§0.7 ②） |
-| **PoW 提交报 40026** | 明明解出了正确 counter | 字段名必须是 `powPayload`，且值为 `JSON.stringify({token,counter})` **字符串**（不是 `captchaCode`、不是嵌套对象） |
-| **PoW 失败却当成"未知错误"直接放弃** | PoW 校验失败返回 **`40027`**，不是 `40026` | 判断"验证是否失败"必须同时覆盖 `40026` 与 `40027`，否则 PoW 一次失败就再也不会换新挑战重试（§0.6 对照表） |
-| **PoW token 用错 purpose** | 用 `purpose=login` 的 token 去 `POST /file/source` → `40027` | 登录用 `login`，取直链用 `direct_link`；两者 token 不通用 |
-| **把 PoW 挑战响应当常规响应解析** | 取不到 `data`，字段全是 undefined | `/site/captcha/pow` 返回**扁平 JSON**，无 `{code,data,msg}` 信封（§0.7 ①） |
+| **PoW 求解慢/像卡死** | 单次数十秒无输出 | 算法未变，但求解是**单线程**逐 counter 试算，`counterLimit` 上限 5000，最坏需遍历完整区间。实现选型上 `webcrypto.subtle.deriveBits` 快于 `crypto.pbkdf2Sync`，手写 HMAC 循环慢一个数量级（勿用）（§0.7 ②） |
+| **把 PoW 挑战响应当常规响应解析** | 取不到 `data`，字段全是 undefined | `/site/captcha/pow` 返回**扁平 JSON**，无 `{code,data,msg}` 信封；但 41700 内嵌的 `data.pow` 是**常规信封内**的（§0.7 ①） |
 | **DELETE 漏 CSRF** | `40026` | 每次写请求前 GET `/site/config` 重取 token（§0.4） |
 | **force:true 想跳过回收站** | 文件仍进回收站 | 接受"进回收站 48h 后自动清除"，或按需处理回收站（§4.2） |

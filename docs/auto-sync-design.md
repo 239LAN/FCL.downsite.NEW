@@ -3,7 +3,7 @@
 > 状态：**已实施**——日期归档 + 双 job 预探测（probe→sync）架构已落地并验证通过。演进历史见 git 记录。
 > 目标：将线路1（`/data/down`）从"站长手动维护"改造为"GitHub Actions 自动更新"，保留现有网盘分发模式，站端零代码改动。
 >
-> 本文只记录**设计决策与原因**。具体实现、配置项、常量与软件映射以 `scripts/auto-sync/` 下的代码为准（`config.mjs`、`softwares.json` 等）；网盘 API 端点细节以 [`huang1111-api-notes.md`](huang1111-api-notes.md) 为准；脚本用法以 [`../scripts/auto-sync/README.md`](../scripts/auto-sync/README.md) 为准；测试文件在项目外，路径：`C:\Users\XiaoluoFoxington\huang1111-api-test`。
+> 本文只记录**设计决策与原因**。具体实现、配置项、常量与软件映射以 `scripts/auto-sync/` 下的代码为准（`config.mjs`、`softwares.json` 等）；网盘 API 端点细节以 [`huang1111-api-notes.md`](huang1111-api-notes.md) 为准；脚本用法以 [`../scripts/auto-sync/README.md`](../scripts/auto-sync/README.md) 为准；测试文件在项目外，路径：`C:\Users\XiaoluoFoxington\huang1111-api-test`（线上脚本的验证探针为其中的 `_probe-v2-*.mjs`，用法见该目录 `README.md`）。
 
 ## 1. 背景与目标
 
@@ -63,7 +63,7 @@ GHA workflow
   │       - 全量软件均已是最新 → 输出 needs_sync=false → sync job 不调度
   │
   └─ 【sync job】——重量同步（仅当 needs_sync=true 时调度）
-      · checkout + setup-python + setup-node + 安装 OCR 依赖
+      · checkout + setup-node
       · node sync.mjs
           ① 一次性登录网盘（跨软件复用会话）
           ② 对每个有候选的软件：幂等检查 → 提交离线下载 → 轮询（旧的版本先处理）
@@ -72,14 +72,21 @@ GHA workflow
           ⑤ 分软件 git commit（固定消息格式）+ 全部完成后统一 push
 ```
 
-**为什么分双 job？** 日常定时任务（多数时候无新 Release）只需跑轻量的 probe job，省掉 Python/Node/OCR 依赖安装以及全部网盘操作；sync job 仅在有候选时才启动（容器都不拉起）。
+**为什么分双 job？** 日常定时任务（多数时候无新 Release）只需跑轻量的 probe job，省掉 Node 安装以及全部网盘操作；sync job 仅在有候选时才启动（容器都不拉起）。
+
+> 2026-10-02 起站点图形验证码通路下线，验证全靠 PoW，**sync job 已不再需要 Python / pip / OCR 依赖**（相应步骤与 Secrets 已移除）。
 
 ### 3.2 触发与凭据
 
 - 由工作流的 `schedule`（cron 按 UTC 编写）与 `workflow_dispatch` 手动触发；另有 `concurrency` 防重入。具体时间点见 `.github/workflows/auto-sync.yml`。
 - **登录凭据**以仓库 Secrets 注入，只在 sync job 中使用；probe job 完全不读凭据。
-- **验证码识别**由 OCR 完成，期望长度固定；验证码**一次性**（同码重试必败）且 OCR 存在误读率，因此失败必须**换新验证码**重试（重试上限见 `config.mjs`）。
-- **PoW 兜底**：站点已切换 `captcha_type = "pow"`，但后端**同时保留图形验证码通路**（2026-09-26 实测两条路都可用：图形验证码 3/6、PoW 6/6）。故策略为「**默认 OCR，用尽后回退 PoW**」：图形验证码重试上限耗尽后自动改走 PoW，PoW 求解为纯 WebCrypto（无需 WASM，与前端 WebCrypto 回退路径同算法）。两条路互为兜底 —— PoW 挑战被限流/失效时靠 OCR 过，OCR 误读率高时靠 PoW 过。协议细节见 [`huang1111-api-notes.md`](huang1111-api-notes.md) §0.7。
+- **验证方式（2026-10-02 起为 captcha policy v2）**：站点已**下线图形验证码通路**（`captchaCode` 失效），验证统一走 PoW：
+  - 所有请求带 `X-Cloudreve-Captcha-Protocol: 2`（缺失 → `41709`）
+  - 请求返回 `41700` 时取其内嵌 policy → 解 PoW → `POST /site/captcha/policy` 换许可 → 带 `X-Cloudreve-Captcha-Permit` 重发
+  - 整条链路按次重试（`RETRY.VERIFY_ATTEMPTS`），`41702` 限流按 `retry_after` 退避
+  - PoW 求解为纯 WebCrypto（与前端 WebCrypto 回退路径同算法），**单线程**，带进度日志与硬超时
+  - ⚠️ 必须携带**全部 cookie**（`cloudreve-session` + `cloudreve_observer` + `cloudreve_send`），否则许可提交恒 `41701`
+  - 协议细节与被否决的旧方案见 [`huang1111-api-notes.md`](huang1111-api-notes.md) §0.3 / §0.4b / §0.7
 
 ### 3.3 软件映射表
 
@@ -109,7 +116,7 @@ GHA workflow
 
 自动化相关代码位于 `.github/workflows/auto-sync.yml` 与 `scripts/auto-sync/` 下；各文件的职责以其文件头注释与 [`../scripts/auto-sync/README.md`](../scripts/auto-sync/README.md) 为准，本文不逐文件罗列。
 
-脚本用 Node.js 编写（仓库无构建步骤，与前端生态一致），CI 用 `actions/setup-node` + 无依赖脚本（原生 `fetch`）以避免 `npm install` 开销；OCR 依赖仅 sync job 运行时安装。
+脚本用 Node.js 编写（仓库无构建步骤，与前端生态一致），CI 用 `actions/setup-node` + 无依赖脚本（原生 `fetch` / `webcrypto`）以避免 `npm install` 开销。**无 Python 依赖**（2026-10-02 起 OCR 已移除）。
 
 ### 3.7 提交格式（每软件一个 commit）
 
@@ -117,22 +124,35 @@ GHA workflow
 - 无变更不提交；全部完成后统一 push
 - 主题前缀与 `updata-verInfo.yml` 的防重入判断天然兼容，两个工作流不会互相触发死循环
 
-### 3.8 OCR 依赖保护（防站长针对性升级）
+### 3.8 验证协议（captcha policy v2）
 
-- OCR 依赖的**包名与类名都只存仓库 Secret**，仓库任何代码内不出现明文
-- 安装步骤用 Secret 注入后 `pip install`；`ocr_helper.py` 运行时从环境变量读取，未提供则直接报错退出，不内置任何回退
+2026-10-02 起站点把验证换成 **captcha policy v2**，图形验证码通路**后端已下线**（OCR 相关代码、依赖与 Secrets 全部移除）。当前唯一路径：
+
+```
+所有请求带 X-Cloudreve-Captcha-Protocol: 2（缺失 → 41709）
+  → 41700 + 内嵌 policy → 解 PoW → POST /site/captcha/policy {id, pow_payload}
+  → 带 X-Cloudreve-Captcha-Permit: <policy.id> 重发原请求
+```
+
+- 必须携带**全部 cookie**（`cloudreve-session` + `cloudreve_observer` + `cloudreve_send`），否则许可提交恒 `41701`
+- 必须使用 **41700 内嵌**的 PoW token（含 `binding` claim）；独立 `GET /site/captcha/pow` 的 token 无效
+- PoW 算法与上一版**一致**（PBKDF2-SHA256 + `Cloudreve-PoW/v1` 域分隔串），但要求**单线程**求解并设置硬超时
+
+协议细节与被否决方案的排查过程见 [`huang1111-api-notes.md`](huang1111-api-notes.md) §0.3 / §0.4b / §0.7 / §10。
 
 ## 4. 错误处理与恢复
 
-采用**分级重试**：验证码类失败（先换新验证码，用尽后回退 PoW）、离线下载失败（整段「提交+轮询」）、其他任何失败各自有独立的重试上限；**具体次数与超时以 [`../scripts/auto-sync/config.mjs`](../scripts/auto-sync/config.mjs) 的常量为准**。
+采用**分级重试**：完整验证链路（41700 → PoW → policy → permit）、离线下载（整段「提交+轮询」）、其他任何失败各自有独立的重试上限；**具体次数与超时以 [`../scripts/auto-sync/config.mjs`](../scripts/auto-sync/config.mjs) 的常量为准**。
 
 | 场景 | 处理 |
 |---|---|
 | probe job 失败 | 全部软件探测失败 → 仍输出 `needs_sync=true`（宁可多跑一次，也不遗漏）；个别失败但其他有候选 → 照常触发 sync job |
-| 登录失败（验证码/PoW/CSRF/网络） | 按分级重试（OCR 用尽自动回退 PoW）；仍失败 → workflow 失败（Actions 红色即告警），下次运行自动重试 |
+| 登录失败（验证链路/CSRF/网络） | 按分级重试（整条验证链路换新 policy 重走）；`40020`/`40001`/`401` 为终态立即失败；仍失败 → workflow 失败（Actions 红色即告警），下次运行自动重试 |
+| 站点要求交互式验证（滑块） | `required.interactive > 0` 时直接报错暴露，不静默重试（脚本无法自动完成） |
+| 验证被限流（41702） | 按 `data.retry_after` 退避后重试 |
 | 离线下载失败 | 轮询判失败；本版本跳过（不写 JSON），继续处理其余版本，退出码非 0 |
 | 会话过期（401） | 单次运行只在开始时建立会话；中途失效以错误暴露，下次运行自动重登（当前不自动重登，属已知边界） |
-| 直链获取失败 | 换新验证码重试，用尽后回退 PoW；仍失败 → 该版本跳过写 JSON，下次运行重试 |
+| 直链获取失败 | 重走完整验证链路（换新 policy）；仍失败 → 该版本跳过写 JSON，下次运行重试 |
 | 同版本重复触发 | 以仓库已有 index.json 为基线去重（重名跳过）；离线下载前先查目录，已含全部文件则跳过 |
 | 手动条目冲突 | 脚本只增不删 index.json 条目；手动条目原样透传 |
 | GHA 运行超时 | probe/sync job 各有 `timeout-minutes` 兜底（见 workflow）；未完成的版本下次运行续跑 |
@@ -143,8 +163,8 @@ GHA workflow
 |---|---|---|
 | 网盘 API 是逆向产物，可能变更 | 中 | 所有调用集中在 `h1api.mjs` 一处，变更时只改封装；仓库记录 API 验证快照（见 `huang1111-api-notes.md`） |
 | 登录凭据存于 Actions secret | 中 | secret 权限最小化；账号密码可随时在网盘端改密作废 |
-| 验证码 OCR 失败率 | 低 | 换新验证码重试兜底，用尽后自动回退 PoW（实测 6/6）；持续失败触发告警 |
-| 站点再次变更验证机制（如强制 PoW、换协议） | 中 | 验证逻辑集中在 `h1api.mjs` 的 `verifyThenPost` + `login`/`getSources` 两处；协议常量（`POW_PROTOCOL` / `POW_DOMAIN_STRING`）已显式命名并带注释，变更时改这一处；人工复核方法见 `huang1111-api-notes.md` §0.7 |
+| PoW 求解耗时（单线程逐 counter 试算，数十秒级） | 低 | 带 5s 一条的进度日志 + 硬超时（`RETRY.POW_SOLVE_TIMEOUT_MS`）；挑战有效期约 1200s 余量充足；失败换新挑战重走 |
+| 站点再次变更验证机制（如强制交互式验证、换协议版本） | 中 | 验证逻辑集中在 `h1api.mjs` 的 `verifyThenSend` + `login`/`getSources` 两处；协议常量（`CAPTCHA_PROTOCOL` / `POW_PROTOCOL` / `POW_DOMAIN_STRING`）已显式命名并带注释，变更时改这一处；人工复核方法见 `huang1111-api-notes.md` §0.7 |
 | 离线下载依赖网盘服务器访问 GitHub 的连通性 | 中 | 已验证可用；失败重试；必要时可配置代理前缀 |
 | GHA API 限流 | 低 | 调用量极小（每软件 1 次 releases + 少量网盘接口调用） |
 | 站端 JSON 结构被脚本改坏 | 低 | 生成后本地校验（JSON 可解析、URL 前缀、index 与版本文件一致），校验不过不提交 |

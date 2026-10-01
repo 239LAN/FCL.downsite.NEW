@@ -1,66 +1,79 @@
-// h1api.mjs — huang1111 (Cloudreve 3.8.5) API 封装
+// h1api.mjs — huang1111 (Cloudreve 3.8.7) API 封装
 // 只封装「已验证」的端点（见 docs/huang1111-api-notes.md §8 调用链）：
-//   GET  /site/captcha            → 验证码图（data:image/png;base64,...）
-//   GET  /site/captcha/pow        → PoW 挑战（扁平 JSON，非 {code,data} 信封）
-//   GET  /site/config             → CSRF（响应头 x-csrf-token，每次写请求前重取）
-//   POST /user/session            → 登录（验证码或 PoW + CSRF）
+//   GET  /site/config             → CSRF（响应头 x-csrf-token，每次写请求前重取）+ 站点配置
+//   POST /user/session            → 登录
 //   PUT  /directory               → 建目录（幂等，中间目录自动创建）
 //   GET  /directory/{路径}        → 列目录（objects：id/name/size/type）
 //   POST /aria2/url               → 提交离线下载（响应无 gid，轮询反查）
 //   GET  /aria2/downloading       → 正在下载的任务（仅用于跳过重复提交）
-//   POST /file/source             → 批量取直链（验证码或 PoW + CSRF）
+//   POST /file/source             → 批量取直链
+//   POST /site/captcha/policy     → 提交 PoW，换取「验证通过」许可
 //
-// 验证（用户确认，2026-09-26 实测）：
-//   站点 site_config.captcha_type = "pow"，但后端**同时保留图形验证码校验通路**
-//   （pow_fallback=true），两条路都可用：
-//     图形验证码（OCR）：实测 3/6 成功，受 OCR 准确率限制
-//     PoW              ：实测 6/6 成功
-//   故策略为「默认 OCR，用尽后回退 PoW」：
-//     登录 / 取直链：图形验证码最多 RETRY.CAPTCHA_ATTEMPTS 次 → 全败则 PoW 最多 RETRY.POW_ATTEMPTS 次
-//   两条路的载荷字段不同：
-//     图形验证码 → captchaCode: "ABCD"
-//     PoW       → powPayload: '{"token":"...","counter":123}'
+// ============================ 验证协议（2026-10-02 逆向 + 实测） ============================
 //
-// PoW 协议（cloudreve-pow-v1，从前端 bundle 逆向 + 实测）：
-//   ① GET /site/captcha/pow?purpose=<login|direct_link> → {token,nonce,salt,target,iterations,counterLimit,expiresAt}
-//   ② password = "Cloudreve-PoW/v1" || 0x00 || nonce
-//      salt     = salt || uint32_be(counter)
-//      PBKDF2-SHA256(password, salt, iterations, 256bit) == target  → 该 counter 即答案
-//      （纯 WebCrypto 即可；前端另有 WASM SIMD 4 路加速，但结果等价，无需实现）
-//   ③ 提交 powPayload = JSON.stringify({token, counter})
-//   实测求解耗时 6.8~12.5s；counterLimit 5000、有效期 1200s，余量充足。
-//   注意：cloudreve 会随验证码/PoW 轮换会话 cookie，但 `cloudreve_observer` 实测**非必需**；
-//   仍按原逻辑只保留 cloudreve-session（其它子域同名 cookie 会干扰会话）。
+// 站点已升级为 **captcha policy v2**，旧的两条验证通路（图形验证码 captchaCode / 裸 PoW powPayload）
+// **全部作废**。旧脚本死在一个前置条件上：**每个请求都必须声明协议版本**。
+//
+//   ⚠ 不带 `X-Cloudreve-Captcha-Protocol: 2` → 一律 HTTP 200 + code=41709
+//       "Please update this page to use the new verification. / 请更新页面后使用新版验证。"
+//       （旧脚本正是这么失败的；带 Protocol: 1 同样 41709）
+//
+// 新流程是「挑战 → 许可」两段式（对应前端 webpack module 197 的 `ensure()` + axios 拦截器）：
+//
+//   ① 正常发请求（带 X-Cloudreve-Captcha-Protocol: 2）
+//   ② 若该请求需要验证 → code=41700，且 **响应 data 里直接内嵌 policy 对象**：
+//        { id, purpose, required:{interactive,pow,level,reason}, revision, expires,
+//          pow:{...PoW 挑战...}, interactive_done, pow_done, ready }
+//      · required.interactive === 0 时 interactive_done 直接为 true（**无需滑块**）
+//      · pow.token 是**绑定该 policy.id 的 JWT**（带 binding claim），与单独 GET /site/captcha/pow 拿到的
+//        那种**不通用** —— 必须用 41700 内嵌的这一份
+//   ③ 解 PoW（算法未变，见下）→ POST /site/captcha/policy { id, pow_payload }
+//      · 字段名是 **pow_payload**（下划线），值是 JSON.stringify({token,counter}) 的**字符串**
+//      · 成功 → code=0，data.ready=true，**id 保持不变**
+//   ④ 重发原请求，附加请求头 `X-Cloudreve-Captcha-Permit: <policy.id>` → 这才拿到真实业务结果
+//
+//   ⚠⚠ 必须携带**全部 cookie**：`cloudreve-session` + `cloudreve_observer` + `cloudreve_send`。
+//      旧文档「cloudreve_observer 非必需」已失效。实测只带 cloudreve-session 时
+//      POST /site/captcha/policy 恒返回 41701（验证失败）；带全量 cookie 才 code=0。
+//      cloudreve_observer / cloudreve_send 由 41700 响应下发。
+//
+// PoW 协议（cloudreve-pow-v1，**算法与上一版完全一致**，未变）：
+//   password = "Cloudreve-PoW/v1" || 0x00 || nonce
+//   salt     = salt || uint32_be(counter)
+//   PBKDF2-SHA256(password, salt, iterations, 256bit) == target  → 该 counter 即答案
+//   站点下发的 iterations=3000、counterLimit=5000；求解为单线程逐 counter 试算，
+//   耗时随答案位置浮动（数十秒级），故 solvePow 内做进度日志与硬超时。
+//
+// 错误码（实测）：
+//   0     成功
+//   41700 需要验证（返回 policy，走上面 ②~④）
+//   41701 许可提交被拒（换新挑战重走整条链路）
+//   41702 限流/冷却（data.retry_after 秒后再试）
+//   41709 协议版本不对（缺 X-Cloudreve-Captcha-Protocol: 2）
+//   40026 旧「图形验证码」失败码（已无用，仍按验证失败处理）
+//   40027 旧「PoW」失败码（已无用，仍按验证失败处理）
+//   40020 账号或密码错误（终态）   40001 参数错误（终态）   401 未登录（终态）
 //
 // 成功判据（用户确认）：
 //   离线下载是否成功，**只看目录（GET /directory）**里是否出现了全部期望文件、
 //   且每个文件的 size 与 GitHub asset 的精确字节数一致。
 //   不再查询 /aria2/finished，也不依赖任何 API 返回的 status / code 作为成败判据。
 //
-// 重试策略（用户确认）：
-//   图形验证码类失败（登录/取直链）→ 换新验证码最多 10 次，用尽后回退 PoW 最多 3 次
-//   离线下载失败              → 提交+轮询最多 3 次
-//   其他任何失败（网络/HTTP） → 最多 2 次尝试
+// 重试策略（用户确认）：见 config.mjs RETRY —— 「完整验证链路」按次重试，详见 verifyThenSend。
 
-import { execFileSync } from 'node:child_process';
 import { webcrypto } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { ENV, RETRY, TIMING, LIMIT } from './config.mjs';
 
 const BASE = ENV.HOST + '/api/v3';
 const ORIGIN = ENV.HOST;
-const HERE = dirname(fileURLToPath(import.meta.url));
-const OCR_HELPER = join(HERE, 'ocr_helper.py');
-const PY_BIN = process.platform === 'win32' ? 'python' : 'python3';
-const CAPTCHA_PNG = join(tmpdir(), `h1-captcha-${process.pid}.png`);
-const OCR_OUT = join(tmpdir(), `h1-ocr-${process.pid}.txt`);
+
+// 新版验证协议版本号；所有请求都要带（前端 axios 请求拦截器对每个请求都无条件加上）
+const CAPTCHA_PROTOCOL = '2';
 
 // ---------- 会话状态 ----------
-let cookie = ''; // "cloudreve-session=xxx"
+// ⚠ 必须保存**全部 cookie**（见文件头 ⚠⚠）。旧实现只留 cloudreve-session 会让 policy 提交恒 41701。
+const cookieJar = new Map(); // name -> value
 let csrf = '';
 let isLoggedIn = false;
 
@@ -77,7 +90,11 @@ function logMsg(log, msg) {
   if (typeof log === 'function') log(msg);
 }
 
-// ---------- 底层请求 ----------
+// ---------- cookie / CSRF ----------
+function cookieHeader() {
+  return [...cookieJar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
+}
+
 function saveSetCookie(res) {
   const lines = res.headers.getSetCookie
     ? res.headers.getSetCookie()
@@ -87,19 +104,32 @@ function saveSetCookie(res) {
   for (const line of lines) {
     const m = /^\s*([^=;]+)=([^;]*)/.exec(line);
     if (!m) continue;
-    const name = m[1].trim().toLowerCase();
+    const name = m[1].trim();
     const val = m[2].trim();
-    // 只认 cloudreve-session（其它子域同名 cookie 会干扰会话）
-    if (name === 'cloudreve-session') cookie = `cloudreve-session=${val}`;
+    // 同名 cookie 以最后一次下发为准（会话轮换）
+    if (name.toLowerCase() === 'cloudreve-session') cookieJar.set('cloudreve-session', val);
+    else cookieJar.set(name, val);
   }
 }
 
-async function api(method, path, body) {
-  const headers = { 'Accept': 'application/json' };
-  if (cookie) headers['Cookie'] = cookie;
+// 前端 axios 响应拦截器会从**任意**响应头里吸收最新的 x-csrf-token，这里保持一致
+function saveCsrf(res) {
+  const t = res.headers.get('x-csrf-token');
+  if (typeof t === 'string' && t) csrf = t;
+}
+
+// ---------- 底层请求 ----------
+async function api(method, path, body, extraHeaders = {}) {
+  const headers = {
+    Accept: 'application/json',
+    'X-Cloudreve-Captcha-Protocol': CAPTCHA_PROTOCOL,
+    ...extraHeaders,
+  };
+  const c = cookieHeader();
+  if (c) headers.Cookie = c;
   if (method !== 'GET') {
-    headers['Origin'] = ORIGIN;
-    headers['Referer'] = ORIGIN + '/';
+    headers.Origin = ORIGIN;
+    headers.Referer = ORIGIN + '/';
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (csrf) headers['X-CSRF-Token'] = csrf;
   }
@@ -110,6 +140,7 @@ async function api(method, path, body) {
     redirect: 'manual',
   });
   saveSetCookie(res);
+  saveCsrf(res);
   const text = await res.text();
   let json = null;
   try { json = JSON.parse(text); } catch { /* 非 JSON */ }
@@ -117,15 +148,19 @@ async function api(method, path, body) {
 }
 
 // 写请求前先 GET /site/config 拿最新 CSRF token（实测该响应头必有 x-csrf-token）
-async function apiWithToken(method, path, body) {
+async function apiWithToken(method, path, body, extraHeaders = {}) {
   const cf = await fetch(BASE + '/site/config', {
-    headers: { Accept: 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
+    headers: {
+      Accept: 'application/json',
+      'X-Cloudreve-Captcha-Protocol': CAPTCHA_PROTOCOL,
+      ...(cookieHeader() ? { Cookie: cookieHeader() } : {}),
+    },
     redirect: 'manual',
   });
   saveSetCookie(cf);
-  csrf = cf.headers.get('x-csrf-token') || '';
+  saveCsrf(cf);
   if (!csrf) throw new H1Error('GET /site/config 未返回 x-csrf-token');
-  return api(method, path, body);
+  return api(method, path, body, extraHeaders);
 }
 
 // 其他任何失败：最多重试（再尝试）N-1 次，默认 RETRY.GENERIC_ATTEMPTS 次尝试
@@ -142,35 +177,8 @@ async function genericAttempts(fn, label, log, attempts = RETRY.GENERIC_ATTEMPTS
   throw lastErr;
 }
 
-// ---------- 验证码 OCR ----------
-async function recognizeCaptcha(log) {
-  const r = await fetch(BASE + '/site/captcha?_=' + Date.now(), {
-    headers: { Accept: 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
-    redirect: 'manual',
-  });
-  saveSetCookie(r);
-  const j = await r.json();
-  if (j.code !== 0) throw new H1Error('captcha 获取失败: ' + (j.msg || r.raw));
-  const b64 = j.data.split(',')[1];
-  writeFileSync(CAPTCHA_PNG, Buffer.from(b64, 'base64'));
-  let code = '';
-  try {
-    // 结果写入临时文件读取，避免子进程 stdout 管道捕获受限
-    if (existsSync(OCR_OUT)) unlinkSync(OCR_OUT);
-    execFileSync(PY_BIN, [OCR_HELPER, CAPTCHA_PNG, OCR_OUT], { stdio: 'ignore' });
-    code = existsSync(OCR_OUT) ? readFileSync(OCR_OUT, 'utf8').trim() : '';
-  } catch (e) {
-    logMsg(log, `  [OCR] 子进程失败：${e.message}`);
-  } finally {
-    if (existsSync(CAPTCHA_PNG)) unlinkSync(CAPTCHA_PNG);
-    if (existsSync(OCR_OUT)) unlinkSync(OCR_OUT);
-  }
-  logMsg(log, `  [OCR] 识别结果：${code || '（空）'}`);
-  return code; // 可能为空/长度≠4，由调用方判定
-}
-
-// ---------- PoW（cloudreve-pow-v1）----------
-// 协议来源：前端 bundle 逆向 + 实测。求解用纯 WebCrypto（与前端 WebCrypto 回退路径同算法）。
+// ---------- PoW（cloudreve-pow-v1，算法与上一版一致）----------
+// 协议来源：前端 bundle / cloudreve-pow.*.worker.js 逆向 + 实测。
 
 const POW_PROTOCOL = 'cloudreve-pow-v1'; // challenge.protocol 的取值（小写，用于校验）
 const POW_ALGORITHM = 'PBKDF2-SHA-256';
@@ -187,25 +195,9 @@ function b64urlToBytes(value) {
   return new Uint8Array(Buffer.from(s, 'base64'));
 }
 
-// 取 PoW 挑战。注意：该响应是**扁平 JSON**（无 {code,data} 信封），不能按常规响应解析。
-async function fetchPowChallenge(purpose) {
-  const r = await fetch(
-    `${BASE}/site/captcha/pow?purpose=${encodeURIComponent(purpose)}&_=${Date.now()}`,
-    {
-      headers: { Accept: 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
-      redirect: 'manual',
-    },
-  );
-  saveSetCookie(r);
-  const text = await r.text();
-  let j = null;
-  try { j = JSON.parse(text); } catch { /* 非 JSON */ }
-  if (!j?.token) throw new H1Error(`PoW 挑战获取失败(HTTP ${r.status}): ${(j && (j.error || j.msg)) || text.slice(0, 120)}`);
-  return j;
-}
-
 // 求解：逐 counter 试 PBKDF2-SHA256(password, salt||uint32_be(counter), iterations) == target
-async function solvePow(challenge) {
+// 单线程（用户确认不引入 worker_threads），故带进度日志 + 硬超时，避免 GHA 里静默假死。
+async function solvePow(challenge, log) {
   if (challenge.protocol !== POW_PROTOCOL || challenge.algorithm !== POW_ALGORITHM) {
     throw new H1Error(`PoW 协议不匹配：${challenge.protocol}/${challenge.algorithm}`);
   }
@@ -221,6 +213,15 @@ async function solvePow(challenge) {
   password.set(POW_DOMAIN, 0);
   password.set(nonce, POW_DOMAIN.length);
   const key = await webcrypto.subtle.importKey('raw', password, 'PBKDF2', false, ['deriveBits']);
+
+  // expiresAt 与自定义上限取小者作为硬超时
+  const expiresMs = Number(challenge.expiresAt) > 0
+    ? Number(challenge.expiresAt) * 1000 - Date.now()
+    : Infinity;
+  const budget = Math.min(RETRY.POW_SOLVE_TIMEOUT_MS, expiresMs);
+
+  const t0 = Date.now();
+  let lastLog = t0;
   for (let counter = 0; counter < counterLimit; counter += 1) {
     const salt = new Uint8Array(baseSalt.length + 4);
     salt.set(baseSalt, 0);
@@ -230,157 +231,246 @@ async function solvePow(challenge) {
       key,
       256,
     ));
-    if (bits.length === target.length && bits.every((b, i) => b === target[i])) return counter;
+    if (bits.length === target.length && bits.every((b, i) => b === target[i])) {
+      if (typeof log === 'function' && counter > 0) {
+        logMsg(log, `  [PoW] 命中 counter=${counter}（试了 ${counter + 1} 个，用时 ${((Date.now() - t0) / 1000).toFixed(1)}s）`);
+      }
+      return counter;
+    }
+    const now = Date.now();
+    if (now - t0 > budget) {
+      throw new H1Error(`PoW 求解超时（${((now - t0) / 1000).toFixed(1)}s，已试 ${counter + 1}/${counterLimit}）`);
+    }
+    if (typeof log === 'function' && now - lastLog >= TIMING.POW_PROGRESS_INTERVAL_MS) {
+      lastLog = now;
+      logMsg(log, `  [PoW] 求解中… ${counter + 1}/${counterLimit}（${((now - t0) / 1000).toFixed(1)}s）`);
+    }
   }
   return null; // counterLimit 内未找到（正常不会发生）
 }
 
-// 取挑战 → 求解 → 返回可直接提交的 powPayload 字符串
-async function powPayloadFor(purpose, log) {
-  const challenge = await fetchPowChallenge(purpose);
-  const t0 = Date.now();
-  const counter = await solvePow(challenge);
-  const ms = Date.now() - t0;
-  if (counter === null) throw new H1Error(`PoW 求解失败：counterLimit(${challenge.counterLimit}) 内未找到答案`);
-  logMsg(log, `  [PoW] purpose=${purpose} → counter=${counter}（求解 ${(ms / 1000).toFixed(1)}s）`);
-  return JSON.stringify({ token: challenge.token, counter });
+// ---------- 错误分类 ----------
+// 需要走「验证链路」的码
+const VERIFICATION_REQUIRED_CODES = new Set([41700]);
+const VERIFICATION_FAILED_CODES = new Set([40026, 40027, 41701]);
+const RATE_LIMITED_CODES = new Set([41702]);
+// 重试也无意义的终态：凭据错误、未登录、参数错误等
+const TERMINAL_CODES = new Set([40020, 40001, 401, 40007, 40008]);
+// 我方实现问题（不该重试，应直接报错暴露）
+const INTERNAL_CODES = new Set([41703, 41704, 41705]);
+
+function isVerificationRequired(r) {
+  return VERIFICATION_REQUIRED_CODES.has(r.json?.code);
 }
-
-// ---------- 验证失败 / 终态错误码分类 ----------
-// 实测（2026-09-26，真实账号）：
-//   40026 = 图形验证码校验失败（漏带 captchaCode 也报这个）
-//   40027 = PoW 校验失败（counter 错误 / token purpose 不符 / powPayload 非法 JSON）
-//   40020 = 账号或密码错误（真·终态）
-//   40001 = 参数错误（如密码为空）（真·终态）
-//   401   = 未登录/会话过期（真·终态，本脚本不自动重登）
-// 两条验证通路会返回**不同**的码，故必须都算「验证失败」才能正确换新验证码/挑战重试。
-const VERIFICATION_FAILED_CODES = new Set([40026, 40027]);
-const TERMINAL_CODES = new Set([40020, 40001, 401]);
-
-// 是否属于「验证没通过」→ 应换新验证码/挑战重试
 function isVerificationFailure(r) {
   if (VERIFICATION_FAILED_CODES.has(r.json?.code)) return true;
-  // 兜底：站点若改码但保留文案，仍能识别（40026/40027 的 msg 均为这句）
+  // 兜底：站点若改码但保留文案，仍能识别
   return /verification failed/i.test(String(r.json?.msg || ''));
 }
-
-// 是否属于「重试也无意义」的终态错误（凭据错误、未登录等）
+function isRateLimited(r) {
+  return RATE_LIMITED_CODES.has(r.json?.code);
+}
 function isTerminalFailure(r) {
   return TERMINAL_CODES.has(r.json?.code);
 }
+function isInternalFailure(r) {
+  return INTERNAL_CODES.has(r.json?.code);
+}
+// 站点返回 code=0 但响应形状仍不满足 isSuccess（如取直链条数不足）→ 重试整条链路无意义
+function isShapeMismatch(r, isSuccess) {
+  return r.json?.code === 0 && !isSuccess(r);
+}
 
-// ---------- 验证（默认 OCR，用尽后回退 PoW）----------
-// 两种验证方式共用同一套驱动逻辑，只有「取载荷」与「字段名」不同：
-//   图形验证码 → 载荷 "ABCD"（长度须为 4，否则直接换新验证码不浪费请求）
-//   PoW       → 载荷 '{"token":"...","counter":123}'
-// 返回 { ok, response }；耗尽时抛 H1Error。
+// 41702 的 retry_after（秒）；缺省用 TIMING.COOLDOWN_DEFAULT_MS
+function cooldownMs(r) {
+  const sec = Number(r.json?.data?.retry_after ?? r.json?.retry_after);
+  return Number.isFinite(sec) && sec > 0 ? sec * 1000 : TIMING.COOLDOWN_DEFAULT_MS;
+}
+
+// ---------- 验证链路（挑战 → 许可）----------
+// 对应前端 module 197 的 ensure() + axios 拦截器：
+//   发请求 → 若 41700 则解 PoW 换许可 → 带 X-Cloudreve-Captcha-Permit 重发
+// 返回 { ok, response }；链路耗尽时抛 H1Error。
 //
 // 分类策略（为了"绝不能因为站点小改动就全线失败"）：
-//   成功              → 返回
-//   验证失败(40026/27) → 换新验证码/挑战重试（耗尽后进入 PoW 兜底阶段）
-//   真·终态(40020/401…)→ 立即返回失败，日志给出明确原因（重试无意义，省掉无效等待）
-//   其它未知错误       → 一并重试（宁可多试，也不因站点换了个新错误码就放弃 PoW 兜底）
-async function verifyThenPost({ url, buildBody, purpose, label, log, isSuccess = (r) => r.json?.code === 0 }) {
-  // 阶段 1：图形验证码，最多 RETRY.CAPTCHA_ATTEMPTS 次
+//   成功                → 返回
+//   41700 需要验证      → 走 PoW → policy → permit 重发
+//   41701 许可被拒      → 换新挑战重走整条链路
+//   41702 限流          → 按 retry_after 退避后重试
+//   40026/40027 旧验证码→ 一并重试
+//   终态(40020/40001/…) → 立即返回失败，日志给出明确原因（重试无意义）
+async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label, log, isSuccess = (r) => r.json?.code === 0 }) {
   let lastDetail = '';
-  for (let attempt = 1; attempt <= RETRY.CAPTCHA_ATTEMPTS; attempt += 1) {
-    logMsg(log, `[${label}] 第 ${attempt}/${RETRY.CAPTCHA_ATTEMPTS} 次：图形验证码 + OCR`);
-    let code = '';
-    try {
-      code = await recognizeCaptcha(log);
-    } catch (e) {
-      lastDetail = `验证码获取失败：${e.message}`;
-      logMsg(log, `  [${label}] ${lastDetail}，换新验证码`);
-      continue;
-    }
-    if (code.length !== 4) {
-      lastDetail = `OCR 长度≠4（${code || '空'}）`;
-      logMsg(log, `  [${label}] ${lastDetail}，换新验证码`);
-      continue;
-    }
+
+  for (let attempt = 1; attempt <= RETRY.VERIFY_ATTEMPTS; attempt += 1) {
+    logMsg(log, `[${label}] 第 ${attempt}/${RETRY.VERIFY_ATTEMPTS} 次：正常请求`);
+
     let r;
     try {
       r = await genericAttempts(
-        () => apiWithToken('POST', url, buildBody({ captchaCode: code })),
-        `${label} POST(OCR)`,
+        () => apiWithToken(method, url, buildBody ? buildBody() : undefined),
+        `${label} 请求`,
         log,
       );
     } catch (e) {
       lastDetail = `请求异常：${e.message}`;
-      logMsg(log, `  [${label}] ${lastDetail}，换新验证码重试`);
+      logMsg(log, `  [${label}] ${lastDetail}，重试`);
       continue;
     }
-    if (isSuccess(r)) {
-      logMsg(log, `  [${label}] ✅ 图形验证码通过（第 ${attempt} 次）`);
-      return { ok: true, response: r };
-    }
+
+    if (isSuccess(r)) return { ok: true, response: r };
     if (isTerminalFailure(r)) {
       lastDetail = `终态错误 code=${r.json?.code}（${r.json?.msg || ''}），重试无意义`;
       logMsg(log, `  [${label}] ❌ ${lastDetail}`);
       return { ok: false, response: r };
     }
+    if (isInternalFailure(r)) {
+      throw new H1Error(`${label}内部错误 code=${r.json?.code}（${r.json?.msg || ''}）`);
+    }
+    if (isRateLimited(r)) {
+      const wait = cooldownMs(r);
+      lastDetail = `限流 code=41702，退避 ${(wait / 1000).toFixed(0)}s`;
+      logMsg(log, `  [${label}] ${lastDetail}`);
+      await sleep(wait);
+      continue;
+    }
+
+    if (isVerificationRequired(r)) {
+      // ---- ② 拿到 policy ----
+      const policy = r.json?.data;
+      if (!policy || typeof policy.id !== 'string') {
+        lastDetail = '41700 响应缺少 policy.id';
+        logMsg(log, `  [${label}] ${lastDetail}，重试`);
+        continue;
+      }
+      const required = policy.required || {};
+      logMsg(
+        log,
+        `  [${label}] 需要验证：purpose=${policy.purpose || purpose} interactive=${required.interactive ?? '?'} pow=${required.pow ?? '?'} reason=${required.reason ?? '?'}`,
+      );
+
+      // 交互式验证（滑块/点选）无法自动完成 —— 明确报错，不要静默重试 3 遍浪费几分钟
+      if (Number(required.interactive) > 0 && !policy.interactive_done) {
+        throw new H1Error(
+          `${label}失败：站点要求交互式验证（interactive=${required.interactive}），无法自动完成，需人工处理`,
+        );
+      }
+
+      if (!policy.pow || !policy.pow.token) {
+        lastDetail = `41700 未提供 PoW 挑战（pow=${required.pow ?? '?'}）`;
+        logMsg(log, `  [${label}] ${lastDetail}，重试`);
+        continue;
+      }
+
+      // ---- ③ 解 PoW 并提交换许可 ----
+      let counter;
+      try {
+        const t0 = Date.now();
+        counter = await solvePow(policy.pow, log);
+        if (counter === null) throw new H1Error(`counterLimit(${policy.pow.counterLimit}) 内未找到答案`);
+        logMsg(log, `  [PoW] purpose=${policy.pow.purpose || purpose} → counter=${counter}（求解 ${((Date.now() - t0) / 1000).toFixed(1)}s）`);
+      } catch (e) {
+        lastDetail = `PoW 求解失败：${e.message}`;
+        logMsg(log, `  [${label}] ${lastDetail}，换新挑战重试`);
+        continue;
+      }
+
+      let pr;
+      try {
+        pr = await genericAttempts(
+          () => apiWithToken('POST', '/site/captcha/policy', {
+            id: policy.id,
+            pow_payload: JSON.stringify({ token: policy.pow.token, counter }),
+          }),
+          `${label} 提交许可`,
+          log,
+        );
+      } catch (e) {
+        lastDetail = `提交许可异常：${e.message}`;
+        logMsg(log, `  [${label}] ${lastDetail}，重试`);
+        continue;
+      }
+
+      if (pr.json?.code !== 0) {
+        if (isRateLimited(pr)) {
+          const wait = cooldownMs(pr);
+          lastDetail = `提交许可被限流，退避 ${(wait / 1000).toFixed(0)}s`;
+          logMsg(log, `  [${label}] ${lastDetail}`);
+          await sleep(wait);
+        } else {
+          lastDetail = `提交许可失败 code=${pr.json?.code}（${pr.json?.msg || pr.raw}）`;
+          logMsg(log, `  [${label}] ${lastDetail}，换新挑战重试`);
+        }
+        continue;
+      }
+      logMsg(log, `  [${label}] ✅ 许可已获得（ready=${pr.json?.data?.ready}）`);
+
+      // ---- ④ 带许可重发原请求 ----
+      const permit = String(pr.json?.data?.id || policy.id);
+      try {
+        r = await genericAttempts(
+          () => apiWithToken(method, url, buildBody ? buildBody() : undefined, {
+            'X-Cloudreve-Captcha-Permit': permit,
+          }),
+          `${label} 带许可重发`,
+          log,
+        );
+      } catch (e) {
+        lastDetail = `带许可重发异常：${e.message}`;
+        logMsg(log, `  [${label}] ${lastDetail}，重试`);
+        continue;
+      }
+
+      // 走完链路后判断「是否只是响应形状不符」——这类失败重试整条链路毫无意义
+      // （每次都要重新解一次几十秒的 PoW），直接抛出暴露问题。
+      if (isSuccess(r)) {
+        logMsg(log, `  [${label}] ✅ 带许可重发成功`);
+        return { ok: true, response: r };
+      }
+      if (isShapeMismatch(r, isSuccess)) {
+        throw new H1Error(
+          `${label}失败：接口本身返回 code=0，但响应形状不符合预期（${JSON.stringify(r.json?.data)?.slice(0, 200)}）`,
+        );
+      }
+      if (isTerminalFailure(r)) {
+        lastDetail = `终态错误 code=${r.json?.code}（${r.json?.msg || ''}），重试无意义`;
+        logMsg(log, `  [${label}] ❌ ${lastDetail}`);
+        return { ok: false, response: r };
+      }
+      if (isRateLimited(r)) {
+        const wait = cooldownMs(r);
+        lastDetail = `限流 code=41702，退避 ${(wait / 1000).toFixed(0)}s`;
+        logMsg(log, `  [${label}] ${lastDetail}`);
+        await sleep(wait);
+        continue;
+      }
+      // 又回到 41700 → 下一轮循环重走整条链路
+      lastDetail = `带许可重发仍被要求验证 code=${r.json?.code}（${r.json?.msg || ''}）`;
+      logMsg(log, `  [${label}] ${lastDetail}，重试`);
+      continue;
+    }
+
+    // 旧验证码失败码 / 其它未知错误：一并重试，不因站点换了个错误码就放弃
     if (isVerificationFailure(r)) {
-      lastDetail = `验证失败(${r.json?.code})（${code}）`;
-      logMsg(log, `  [${label}] ${lastDetail}，换新验证码`);
+      lastDetail = `验证失败 code=${r.json?.code}（${r.json?.msg || ''}）`;
+      logMsg(log, `  [${label}] ${lastDetail}，重试`);
     } else {
-      // 未知错误码：不立即放弃，继续换新验证码重试（耗尽后仍会走 PoW 兜底）
       lastDetail = `未知错误 HTTP ${r.httpStatus} code=${r.json?.code} ${r.json?.msg || r.raw}`;
-      logMsg(log, `  [${label}] ${lastDetail}，换新验证码重试`);
+      logMsg(log, `  [${label}] ${lastDetail}，重试`);
     }
   }
 
-  // 阶段 2：图形验证码用尽 → 回退 PoW，最多 RETRY.POW_ATTEMPTS 次
-  logMsg(log, `  [${label}] 图形验证码 ${RETRY.CAPTCHA_ATTEMPTS} 次均失败（${lastDetail}），回退 PoW`);
-  for (let attempt = 1; attempt <= RETRY.POW_ATTEMPTS; attempt += 1) {
-    logMsg(log, `[${label}] PoW 第 ${attempt}/${RETRY.POW_ATTEMPTS} 次：purpose=${purpose}`);
-    let payload = '';
-    try {
-      payload = await powPayloadFor(purpose, log);
-    } catch (e) {
-      lastDetail = `PoW 取挑战/求解失败：${e.message}`;
-      logMsg(log, `  [${label}] ${lastDetail}，换新挑战`);
-      continue;
-    }
-    let r;
-    try {
-      r = await genericAttempts(
-        () => apiWithToken('POST', url, buildBody({ powPayload: payload })),
-        `${label} POST(PoW)`,
-        log,
-      );
-    } catch (e) {
-      lastDetail = `请求异常：${e.message}`;
-      logMsg(log, `  [${label}] ${lastDetail}，换新挑战重试`);
-      continue;
-    }
-    if (isSuccess(r)) {
-      logMsg(log, `  [${label}] ✅ PoW 通过（第 ${attempt} 次）`);
-      return { ok: true, response: r };
-    }
-    if (isTerminalFailure(r)) {
-      lastDetail = `终态错误 code=${r.json?.code}（${r.json?.msg || ''}），重试无意义`;
-      logMsg(log, `  [${label}] ❌ ${lastDetail}`);
-      return { ok: false, response: r };
-    }
-    if (isVerificationFailure(r)) {
-      lastDetail = `PoW 校验失败(${r.json?.code})`;
-      logMsg(log, `  [${label}] ${lastDetail}，换新挑战`);
-    } else {
-      lastDetail = `未知错误 HTTP ${r.httpStatus} code=${r.json?.code} ${r.json?.msg || r.raw}`;
-      logMsg(log, `  [${label}] ${lastDetail}，换新挑战重试`);
-    }
-  }
   throw new H1Error(
-    `${label}失败：图形验证码 ${RETRY.CAPTCHA_ATTEMPTS} 次 + PoW ${RETRY.POW_ATTEMPTS} 次均未成功（${lastDetail}）`,
+    `${label}失败：完整验证链路 ${RETRY.VERIFY_ATTEMPTS} 次均未成功（${lastDetail}）`,
   );
 }
 
-// ---------- 登录（默认图形验证码 ≤10，用尽回退 PoW ≤3） ----------
+// ---------- 登录（41700 → PoW → policy → permit 重试）----------
 export async function login(user, password, log) {
   isLoggedIn = false;
-  const r = await verifyThenPost({
+  const r = await verifyThenSend({
     url: '/user/session',
-    buildBody: (extra) => ({ userName: user, Password: password, ...extra }),
+    buildBody: () => ({ userName: user, Password: password }),
     purpose: 'login',
     label: '登录',
     log,
@@ -626,12 +716,12 @@ async function pollForFiles(netPath, wantFiles, log) {
   );
 }
 
-// ---------- 批量取直链（默认图形验证码 ≤10，用尽回退 PoW ≤3） ----------
+// ---------- 批量取直链（41700 → PoW → policy → permit 重试）----------
 // fileIds: 文件 id 数组；返回 [{id,url,name}]
 export async function getSources(fileIds, log) {
-  const r = await verifyThenPost({
+  const r = await verifyThenSend({
     url: '/file/source',
-    buildBody: (extra) => ({ items: fileIds, ...extra }),
+    buildBody: () => ({ items: fileIds }),
     purpose: 'direct_link',
     label: '取直链',
     log,

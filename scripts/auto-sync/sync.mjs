@@ -11,9 +11,10 @@
 //   不依赖 /aria2/finished 的 status，也不依赖 POST /aria2/url 返回的 code。
 //
 // 重试策略（用户确认，见 config.mjs RETRY）：
-//   验证码类失败（登录/取直链）→ 换新验证码最多 10 次
+//   验证类失败（登录/取直链）→ 完整验证链路（41700 → PoW → policy → permit）最多 3 次
 //   离线下载失败              → 提交+轮询最多 3 次
 //   其他任何失败（网络/HTTP） → 最多 2 次尝试
+//   站点验证协议细节见 h1api.mjs 文件头与 docs/huang1111-api-notes.md §0.3 / §0.7
 //
 // 提交格式（用户确认）：`[GHA] 新增：内容：数据源：资源id-{id}：{版本列表&分隔}呜~\n\n{日志}`
 // 每个软件一个 commit；全部完成后统一 push。
@@ -99,7 +100,7 @@ async function syncVersion(sw, version, release) {
     .map((w) => w.name);
   if (missing.length) throw new Error(`目录中缺少或 size 不匹配的文件：${missing.join(', ')}`);
 
-  // 4) 批量取直链（默认图形验证码 ≤10，用尽回退 PoW ≤3 在 h1api 内）
+  // 4) 批量取直链（captcha policy v2 验证链路在 h1api 内：41700 → PoW → policy → permit）
   //    响应含 url 与 short_url（2026-09-26 站长确认二者等价：short_url 只是少了末尾文件名段）。
   //    站端 JS 用完整 url，这里保持一致只取 url；两者都满足下方 /f/ 前缀校验。
   const ids = wantFiles.map((w) => fileMeta.get(w.name).id);

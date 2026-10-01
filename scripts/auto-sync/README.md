@@ -3,17 +3,16 @@
 把「GitHub Releases → huang1111 网盘离线下载 → 直链 → 站端 `data/down` JSON → 提交」全链路自动化，跑在 GitHub Actions 上。站端前端无需改动（下载节点按 `nextUrl` 惰性加载，对目录结构透明）。
 
 > 详细设计见 [`docs/auto-sync-design.md`](../../docs/auto-sync-design.md)，API 实测依据见 [`docs/huang1111-api-notes.md`](../../docs/huang1111-api-notes.md)。
-> 本目录内 `.mjs` 为 Node 原生 ESM（无需 npm install），`.py` 为 OCR 子进程助手。各文件的职责以其文件头注释为准。
+> 本目录内 `.mjs` 为 Node 原生 ESM（无需 npm install）。各文件的职责以其文件头注释为准。
 
 ## 职责速览
 
 - `sync.mjs`：主流程（检测 → 离线下载 → 直链 → 写 JSON → 分软件提交 → push）
 - `probe.mjs`：预探测（只读，无候选时跳过 sync job）
 - `lib.mjs`：纯函数与共享状态
-- `h1api.mjs`：huang1111 API 封装（含 PoW 求解）
+- `h1api.mjs`：huang1111 API 封装（含新版验证链路与 PoW 求解）
 - `config.mjs`：环境变量与常量（**改配置看这里**）
 - `softwares.json`：软件映射表（**有哪些软件看这里**）
-- `ocr_helper.py`：验证码 OCR 子进程助手
 
 ## 触发
 
@@ -28,8 +27,8 @@
 |---|---|
 | `H1111_USER` | huang1111 登录账号 |
 | `H1111_PASSWORD` | huang1111 登录密码 |
-| `OCR_PKG_NAME` | 验证码 OCR 依赖的 pip 包名 |
-| `OCR_CLS_NAME` | 验证码 OCR 依赖的类名 |
+
+> `OCR_PKG_NAME` / `OCR_CLS_NAME` 已废弃（站点图形验证码通路下线），可从仓库删除。
 
 凭据只存 GitHub，脚本只从环境变量读取，仓库内永不落盘。
 
@@ -64,7 +63,7 @@ probe job（轻量，必跑）──读取 GitHub Releases + 本地 index.json �
                        sync job（重量，按需）──登录 → 离线下载 → 直链 → 写 JSON → 提交 → push
 ```
 
-- 无候选时 probe job 输出 `needs_sync=false`，**sync job 完全不启动**（省掉 Python/Node/OCR 安装 + 全部网盘操作）
+- 无候选时 probe job 输出 `needs_sync=false`，**sync job 完全不启动**（连容器都不拉起）
 - 凭据只在 sync job 中使用，probe job 不读凭据
 - 异常时 probe 默认输出 `needs_sync=true`（宁可多跑一次，也不遗漏）
 
@@ -78,12 +77,30 @@ probe job（轻量，必跑）──读取 GitHub Releases + 本地 index.json �
 
 各场景的重试次数与超时以 [`config.mjs`](config.mjs) 的常量（`RETRY` / `TIMING` / `LIMIT` 等）为准。
 
-**登录与取直链的验证方式**（2026-09-26 起站点 `captcha_type = "pow"`，但后端**同时保留图形验证码通路**）：
+**登录与取直链的验证方式**（站点 2026-10-02 起改为 **captcha policy v2**，图形验证码通路**已被后端下线**）：
 
-1. 默认走**图形验证码 + OCR**，最多 `RETRY.CAPTCHA_ATTEMPTS`（10）次，每次换新验证码
-2. 用尽后**自动回退 PoW**，最多 `RETRY.POW_ATTEMPTS`（3）次，每次换新挑战（见 [`docs/huang1111-api-notes.md`](../../docs/huang1111-api-notes.md) §0.7）
+验证不再是「先试图形验证码、失败再回退 PoW」的两阶段，而是一次**挑战 → 许可**链路：
 
-实测成功率：图形验证码 3/6（受 OCR 准确率限制）、PoW 6/6。两条路都耗尽才判定失败。
+```
+正常请求（带 X-Cloudreve-Captcha-Protocol: 2）
+  ↓ code=41700 + data 内嵌 policy{id, required, pow, …}
+解 PoW（算法未变，PBKDF2-SHA256）
+  ↓
+POST /site/captcha/policy { id, pow_payload }   ← 字段名是 pow_payload（下划线）
+  ↓ code=0, ready=true
+带 X-Cloudreve-Captcha-Permit: <policy.id> 重发原请求  → 真实业务结果
+```
+
+- 整条链路最多 `RETRY.VERIFY_ATTEMPTS`（3）次，每次换新 policy/挑战
+- 单次 PoW 求解硬超时 `RETRY.POW_SOLVE_TIMEOUT_MS`（150s；求解为单线程逐 counter 试算，`counterLimit` 上限 5000）
+- `41702` 限流按 `data.retry_after` 退避重试
+- `40020`/`40001`/`401` 为终态（凭据错误、未登录等），立即失败不做无谓重试
+- 站点要求**交互式验证**（滑块等）时直接报错，不静默重试
+
+> ⚠️ 两个必须遵守的前置条件（详见 [`docs/huang1111-api-notes.md`](../../docs/huang1111-api-notes.md) §0.3）：
+> 1. 所有请求都要带 `X-Cloudreve-Captcha-Protocol: 2`，否则一律 `41709`「请更新页面后使用新版验证」
+> 2. 必须携带**全部 cookie**（`cloudreve-session` + `cloudreve_observer` + `cloudreve_send`）。
+>    只带 `cloudreve-session` 时 `POST /site/captcha/policy` 恒返回 `41701` —— 旧文档「observer 非必需」已失效。
 
 任一步耗尽后：该版本跳过（不写 JSON），其余版本继续；存在失败项时进程以非 0 退出，GHA 显示红色即告警，下次运行自动补。
 
@@ -97,20 +114,6 @@ probe job（轻量，必跑）──读取 GitHub Releases + 本地 index.json �
 
 - 主题以 `[GHA]` 开头，与 `updata-verInfo.yml` 的防重入判断兼容，不会互相触发
 
-## OCR 依赖安装
-
-OCR 依赖的**包名与类名都只存仓库 Secret，代码内不出现任何明文**（防止网盘站长扫描仓库后针对性升级验证码）：
-
-- 仓库 Secrets 需配置 `OCR_PKG_NAME` 与 `OCR_CLS_NAME`（见「凭据」一节）
-- GHA workflow 安装步骤注入包名后 `pip install`
-- `ocr_helper.py` 运行时从同名环境变量读取，未提供则直接报错退出，无内置回退
-- 本地开发需先 `export OCR_PKG_NAME=... OCR_CLS_NAME=...` 再运行
-
-> ⚠️ 注意：本目录的 `ocr_helper.py` 是**新版**（收 `<png> [输出文件]` 两个参数 + 从环境变量读包名/类名）。
-> 项目外的测试目录 `C:\Users\XiaoluoFoxington\huang1111-api-test` 里另有一份**旧版**（只收 1 个参数、只写 stdout、硬编码OCR导入）。
-> 两者互不通用：拿旧版配合新调用方（传输出文件路径）会静默返回空串。排查 OCR 问题时先确认用的是哪一份。
-> 若本站 OCR 通路长期可用，「图形验证码 + OCR」为主，「PoW」为兜底（见「重试策略」）。
-
 ## 新增/维护软件
 
 1. 打开 [`softwares.json`](softwares.json)，按现有条目格式追加一行（各字段含义见字段名本身与 [`docs/auto-sync-design.md`](../../docs/auto-sync-design.md)）。
@@ -122,10 +125,15 @@ OCR 依赖的**包名与类名都只存仓库 Secret，代码内不出现任何�
 | 现象 | 原因/处理 |
 |---|---|
 | Actions 运行失败（红色） | 查看该次运行日志：登录失败 / 某版本下载失败 / 直链失败，均会输出中文原因；下次运行自动重试 |
-| 某版本一直失败 | 本地手动跑一次看完整日志；常见：GitHub 资产命名变化（改 `softwares.json`）、验证码与 PoW 双双耗尽（偶发，重跑） |
+| 某版本一直失败 | 本地手动跑一次看完整日志；常见：GitHub 资产命名变化（改 `softwares.json`）、PoW 链路重试耗尽（偶发，重跑） |
 | index.json 顺序乱了 | 手动条目永远排在版本条目之前，版本条目按版本降序；确认数据源 JSON 未被外部改动破坏 |
-| OCR 报错 | 检查是否注入了 `OCR_PKG_NAME` / `OCR_CLS_NAME` 两个 Secret（漏配时助手会报错退出） |
-| 日志里出现「图形验证码 10 次均失败…回退 PoW」 | 正常兜底行为，不是故障；说明本次 OCR 一直没识别对，PoW 接住了 |
+| 日志报 `41709 请更新页面后使用新版验证` | 请求缺 `X-Cloudreve-Captcha-Protocol: 2` 头，或站点又升了协议版本 —— 查 `h1api.mjs` 的 `CAPTCHA_PROTOCOL` |
+| 日志报 `41701 验证失败，请重试` | 提交 `POST /site/captcha/policy` 时 cookie 不全。必须带 `cloudreve-session` + `cloudreve_observer` + `cloudreve_send` 全部 cookie |
+| 日志报「站点要求交互式验证」 | 站点给该 purpose 开了滑块/点选（`required.interactive > 0`），脚本无法自动完成，需人工处理 |
+| 日志报 `41702` 限流 | 已按 `retry_after` 自动退避；若频繁出现说明触发频率限制，需拉长定时任务间隔 |
+| 日志出现「[PoW] 求解中…」 | 正常。求解为单线程逐 counter 试算，耗时数十秒，进度日志每 5s 一条，不是卡死 |
+
+> 怀疑站点又改了验证机制时，先跑项目外测试目录的 `_probe-v2-protocol.mjs` 确认（路径与用法见 [`docs/auto-sync-design.md`](../../docs/auto-sync-design.md) 开头）。
 
 ## 已知边界
 
