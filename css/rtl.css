@@ -165,6 +165,13 @@ html[dir="rtl"][data-xf-theme="dark"] .mdui-table td {
   text-align: left;
 }
 
+/* 页尾吉祥物插画：靠左对齐，并水平翻转让狐狸朝向内容一侧 */
+[dir="rtl"] #xf-foxCorner {
+  margin-left: 0;
+  margin-right: auto;
+  transform: scaleX(-1);
+}
+
 /* 筛选激活指示器：右边距镜像为左边距 */
 [dir="rtl"] .xf-filter-active-indicator {
   margin-right: 0;

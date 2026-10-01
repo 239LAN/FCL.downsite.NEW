@@ -251,6 +251,20 @@ html[data-xf-theme="dark"] .xf-list-table-th-sortable:hover {
   outline-offset: -2px;
 }
 
+/* 页尾吉祥物插画（趴在墙上的狐狸）。带透明通道，白/夜间主题通用。
+   不固定定位：作为正文容器的最后一个子元素参与文档流，靠右对齐，因而不遮挡任何内容，
+   也不会与常驻抽屉（z-index 5000）或版本水印打架。元素由 js/common/foxCorner.js 创建。 */
+#xf-foxCorner {
+  display: block;
+  margin-left: auto;
+  margin-right: 0;
+  width: 270px;
+  height: auto;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
 #xf-verWatermarkContainer {
   position: fixed;
   bottom: 0;

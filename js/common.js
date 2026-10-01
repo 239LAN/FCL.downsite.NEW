@@ -7,6 +7,7 @@ import './common/a11y.js';
 import './common/theme.js';
 import './common/drawer.js';
 import './common/verWatermark.js';
+import './common/foxCorner.js';
 import './common/sponsorRemind.js';
 import { ensureDefaultBookmarks } from './domain/bookmarks.js';
 
