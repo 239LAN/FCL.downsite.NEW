@@ -27,6 +27,12 @@
     "includePrerelease": false
   },
   {
+    "softwareId": 12,
+    "githubRepo": "LZZLHY/amcl",
+    "mode": "name",
+    "includePrerelease": false
+  },
+  {
     "softwareId": 15,
     "githubRepo": "Mystic-Stars/Axolotl",
     "mode": "name",
