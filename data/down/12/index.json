@@ -6,6 +6,16 @@
     "default": true
   },
   {
+    "name": "AMCL v1.0.4",
+    "nextUrl": "/data/down/12/auto/2026/9/24/v1.0.4.json",
+    "tag": "v1.0.4"
+  },
+  {
+    "name": "AMCL v1.0.3",
+    "nextUrl": "/data/down/12/auto/2026/9/2/v1.0.3.json",
+    "tag": "v1.0.3"
+  },
+  {
     "name": "v1.0.2",
     "children": [
       {
