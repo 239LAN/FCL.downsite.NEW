@@ -496,3 +496,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 }
 
 export { compareVersionsDescending, datePathFromRelease, entryVersionKey, entrySortKey, isPinnedEntry, normalizeVersionText, versionFromTag };
+
+// 供本地交互式手动同步工具（.tmp/manual-sync.mjs）复用：
+// 「下载 → 直链 → 写 JSON → 更新 index → 清理 → 提交 → push」全链路与 GHA 共用同一份实现，避免逻辑漂移
+export { syncVersion, updateIndex, verifySyncedData, pruneSoftware, commitSoftware, push };
