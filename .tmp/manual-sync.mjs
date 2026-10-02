@@ -6,7 +6,8 @@
 // 与 GHA 唯一的区别：版本候选由你在 Release 列表中手动选择，而非按 index.json 基线自动判定。
 //
 // 用法：node .tmp/manual-sync.mjs
-// 流程：仓库地址 → huang1111 账号密码 →（未收录仓库时补充参数）→ 列出 Release 供选择
+// 流程：仓库地址 → huang1111 账号密码 →（未收录仓库时补充参数）→ 分页浏览 Release 并选择
+//       （n/p 翻页、more 加载更早、数字=全局序号多选（可跨页）、all=全选已加载、q=退出）
 //       → 已同步版本询问「强制重跑 / 跳过」→ 选择 git 操作 → 确认 → 登录并同步
 //
 // 说明：
@@ -21,7 +22,7 @@ import { emitKeypressEvents } from 'node:readline';
 import * as h1 from '../scripts/auto-sync/h1api.mjs';
 import {
   ctx, ROOT, SOFTWARES,
-  parseDataSourceIndex, versionKnown, versionFromTag, compareVersionsDescending, fetchReleases,
+  parseDataSourceIndex, versionKnown, versionFromTag, compareVersionsDescending, fetchReleasesPage,
 } from '../scripts/auto-sync/lib.mjs';
 import {
   syncVersion, updateIndex, verifySyncedData, pruneSoftware, commitSoftware, push,
@@ -225,20 +226,18 @@ async function askSoftwareConfig(repo) {
 }
 
 // ============================ Release 列表 ============================
-// 拉取全部非 draft Release（含 prerelease，展示时标 [pre]），逐条计算版本名 / 资产匹配数 / 已同步状态
-async function fetchReleaseRows(repo, sw, entries) {
-  console.log(`\n正在拉取 GitHub Releases：${repo} …`);
-  const releases = await fetchReleases(repo, true);
-  const filterRe = sw.assetFilter ? new RegExp(sw.assetFilter) : null;
-  const rows = [];
-  const seen = new Set();
+const PAGE_SIZE = 20; // 分页浏览每屏条数
+
+// 把一页 Releases 转为展示行（跨页按归一化版本名去重），返回新增行
+function buildReleaseRows(releases, filterRe, entries, seen) {
+  const out = [];
   for (const r of releases) {
     const version = versionFromTag(r.tag_name);
     if (seen.has(version)) continue; // 归一化后重名（如 v1.0 与 "v1.0"）只保留第一个
     seen.add(version);
     const all = r.assets || [];
     const matched = filterRe ? all.filter((a) => filterRe.test(a.name || '')) : all;
-    rows.push({
+    out.push({
       release: r,
       version,
       prerelease: !!r.prerelease,
@@ -247,22 +246,24 @@ async function fetchReleaseRows(repo, sw, entries) {
       known: versionKnown(entries, version),
     });
   }
-  return rows;
+  return out;
 }
 
-function printReleaseTable(rows) {
+// 打印一页（序号为跨页连续的全局序号；offset 为当前页起始偏移）
+function printReleasePage(slice, offset, total, pageNo, totalPages, hasMore) {
   console.log('');
   console.log('  ' + padEndW('序号', 6) + padEndW('Tag', 30) + padEndW('标题', 38) + padEndW('发布时间(UTC+8)', 18) + padEndW('匹配资产', 10) + '状态');
   console.log('  ' + '-'.repeat(110));
-  rows.forEach((row, i) => {
+  slice.forEach((row, i) => {
     const tag = truncateW(String(row.release.tag_name) + (row.prerelease ? ' [pre]' : ''), 28);
     const title = truncateW(row.release.name || '—', 36);
     const assets = `${row.assetsMatched}/${row.assetsTotal} 个`;
     const state = row.known ? '✅ 已同步' : '🆕 未同步';
     console.log(
-      `  ${padEndW(String(i + 1), 6)}${padEndW(tag, 30)}${padEndW(title, 38)}${padEndW(fmtDateCST(row.release.published_at), 18)}${padEndW(assets, 10)}${state}`,
+      `  ${padEndW(String(offset + i + 1), 6)}${padEndW(tag, 30)}${padEndW(title, 38)}${padEndW(fmtDateCST(row.release.published_at), 18)}${padEndW(assets, 10)}${state}`,
     );
   });
+  console.log(`  第 ${pageNo}/${totalPages} 页 · 共 ${total} 条已加载${hasMore ? ' · GitHub 上还有更早的（可 more）' : ''} · 最新在前`);
   console.log('');
 }
 
@@ -283,21 +284,6 @@ function parseSelection(text, max) {
     for (let i = a; i <= b; i += 1) out.add(i);
   }
   return out.size ? { quit: false, items: [...out].sort((x, y) => x - y) } : null;
-}
-
-async function askSelection(max) {
-  for (;;) {
-    let line;
-    try {
-      line = await readLine('请选择要同步的 Release（如 1,3-5；all=全部；q=退出）：');
-    } catch (e) {
-      if (e instanceof InputEnded) return { quit: true, items: [] };
-      throw e;
-    }
-    const sel = parseSelection(line, max);
-    if (sel) return sel;
-    console.log('  ⚠ 输入无效：示例 1、1,3、2-4、all、q');
-  }
 }
 
 // ============================ 执行同步（复用 GHA 逻辑） ============================
@@ -414,10 +400,24 @@ async function main() {
     console.log(`⚠ 读取 data/down/${sw.softwareId}/index.json 失败：${e.message}（按空基线处理）`);
   }
 
-  // 5) 拉取并展示 Release 列表
-  let rows;
+  // 5) 拉取第一页 Release，建立分页浏览状态
+  const filterRe = sw.assetFilter ? new RegExp(sw.assetFilter) : null;
+  const rows = [];
+  const seen = new Set();
+  let hasMore = true;  // GitHub 上是否还有更早的页
+  let nextApiPage = 1; // 下一次 loadMoreReleases 拉取的 API 页码
+
+  async function loadMoreReleases() {
+    const { releases, hasNext } = await fetchReleasesPage(repo, true, nextApiPage);
+    const added = buildReleaseRows(releases, filterRe, entries, seen);
+    rows.push(...added);
+    hasMore = hasNext;
+    nextApiPage += 1;
+    return added.length;
+  }
+
   try {
-    rows = await fetchReleaseRows(repo, sw, entries);
+    await loadMoreReleases();
   } catch (e) {
     console.log('❌ 拉取 GitHub Releases 失败：' + e.message);
     process.exitCode = 1;
@@ -427,12 +427,59 @@ async function main() {
     console.log('该仓库没有可选 Release（draft / tag 不含数字的会被排除）');
     return;
   }
-  printReleaseTable(rows);
-  console.log(`共 ${rows.length} 个 Release；[pre] 为预发布；「已同步」按 index.json 判定。`);
+  console.log(`\n共 ${rows.length} 条 Release（含预发布，标 [pre]；「已同步」按 index.json 判定）`);
 
-  // 6) 选择
-  const sel = await askSelection(rows.length);
-  if (sel.quit) {
+  // 6) 分页浏览并选择：n/p 翻页，more 加载更早，数字=全局序号（可跨页），all=全选已加载，q=退出
+  let pageNo = 1;
+  let sel = null;
+  while (!sel) {
+    const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+    if (pageNo > totalPages) pageNo = totalPages;
+    const start = (pageNo - 1) * PAGE_SIZE;
+    printReleasePage(rows.slice(start, start + PAGE_SIZE), start, rows.length, pageNo, totalPages, hasMore);
+
+    const cmds = [];
+    if (pageNo < totalPages) cmds.push('n=下一页');
+    if (pageNo > 1) cmds.push('p=上一页');
+    if (hasMore) cmds.push('more=加载更早');
+    cmds.push('数字=选择（如 1,3-5，可跨页）', 'all=全选已加载', 'q=退出');
+    console.log('  命令：' + cmds.join('  '));
+
+    let line;
+    try {
+      line = (await readLine('> ')).trim().toLowerCase();
+    } catch (e) {
+      if (e instanceof InputEnded) break; // 输入结束 → 取消
+      throw e;
+    }
+
+    if (line === '' || line === 'n') {
+      if (pageNo < totalPages) pageNo += 1;
+      else console.log(hasMore ? '  已是最后一页；输入 more 加载更早的 Release' : '  已是最后一页');
+    } else if (line === 'p') {
+      if (pageNo > 1) pageNo -= 1;
+      else console.log('  已是第一页');
+    } else if (line === 'more' || line === 'm') {
+      if (!hasMore) {
+        console.log('  没有更早的 Release 了');
+      } else {
+        const before = rows.length;
+        console.log(`  正在加载更早的 Release（API 第 ${nextApiPage} 页）…`);
+        try {
+          const added = await loadMoreReleases();
+          console.log(`  ✅ 新增 ${added} 条（共 ${rows.length} 条）`);
+          pageNo = Math.floor(before / PAGE_SIZE) + 1; // 跳到新加载内容的第一页
+        } catch (e) {
+          console.log('  ❌ 加载失败：' + e.message);
+        }
+      }
+    } else {
+      const s = parseSelection(line, rows.length);
+      if (s) sel = s;
+      else console.log(`  ⚠ 无法识别（当前已加载 ${rows.length} 条${hasMore ? '，可 more 加载更早' : ''}）：可用 n / p / more / all / q，或输入序号如 1,3-5`);
+    }
+  }
+  if (!sel || sel.quit) {
     console.log('已取消');
     return;
   }

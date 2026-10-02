@@ -178,8 +178,11 @@ export function versionKnown(entries, version) {
 }
 
 // ---------- GitHub Releases ----------
-export async function fetchReleases(githubRepo, includePrerelease) {
-  const url = `https://api.github.com/repos/${githubRepo}/releases?per_page=100`;
+// 拉取一页 Release（per_page=100）。返回 { releases: 过滤后的列表, hasNext: 是否还有下一页 }：
+//   · 过滤口径与旧 fetchReleases 完全一致：非 draft、（可选）非 prerelease、tag 含数字
+//   · hasNext 依据响应头 Link 的 rel="next"（比"是否满页"可靠：draft/prerelease 过滤不影响判断）
+export async function fetchReleasesPage(githubRepo, includePrerelease, page = 1) {
+  const url = `https://api.github.com/repos/${githubRepo}/releases?per_page=100&page=${page}`;
   let lastErr = null;
   for (let attempt = 1; attempt <= RETRY.GENERIC_ATTEMPTS; attempt += 1) {
     try {
@@ -191,15 +194,23 @@ export async function fetchReleases(githubRepo, includePrerelease) {
       const res = await fetch(url, { headers });
       if (!res.ok) throw new Error(`GitHub API HTTP ${res.status}`);
       const list = await res.json();
-      return list.filter(
-        (r) => !r.draft && (includePrerelease || !r.prerelease) && /[0-9]/.test(r.tag_name || ''),
-      );
+      return {
+        releases: list.filter(
+          (r) => !r.draft && (includePrerelease || !r.prerelease) && /[0-9]/.test(r.tag_name || ''),
+        ),
+        hasNext: /rel="next"/.test(res.headers.get('link') || ''),
+      };
     } catch (e) {
       lastErr = e;
       if (attempt < RETRY.GENERIC_ATTEMPTS) ctx.log(`  [GitHub] 拉取失败（第${attempt}次）：${e.message}，重试…`);
     }
   }
   throw new Error(`GitHub 拉取失败：${lastErr?.message || '未知'}`);
+}
+
+// 返回第一页过滤后的 Releases 数组（GHA 的 probe / sync 使用，口径与改造前一致）
+export async function fetchReleases(githubRepo, includePrerelease) {
+  return (await fetchReleasesPage(githubRepo, includePrerelease, 1)).releases;
 }
 
 // ---------- 资产 → 版本文件条目 ----------
