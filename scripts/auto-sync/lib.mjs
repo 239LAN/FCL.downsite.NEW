@@ -95,7 +95,7 @@ export function datePathFromRelease(release) {
   return `${shifted.getUTCFullYear()}/${shifted.getUTCMonth() + 1}/${shifted.getUTCDate()}`;
 }
 
-// ---------- 从 index.json 条目 nextUrl 反解版本名 ----------
+// ---------- 从 index.json 条目反解版本名 ----------
 // 新格式（日期归档）：/data/down/{id}/auto/{年}/{月}/{日}/{版本名}.json
 // 旧格式（版本逐位拆分）：/data/down/{id}/{段...}.json
 const AUTO_DIR_RE = /^\/data\/down\/\d+\/auto\/\d+\/\d+\/\d+\/([^/]+)\.json$/;
@@ -113,7 +113,37 @@ export function entryVersionKey(nextUrl) {
   return null;
 }
 
+// ---------- 条目版本号解析（路径优先，其次 name/version/tag 文本） ----------
+// 背景（2026-10-02 修订）：旧实现只看 nextUrl，凡是"路径反解不出版本号"的条目一律
+// 当手动条目隔离到最前。这带来两个副作用：
+//   ① id0 的 /data/down/0/boat.json（"最后一个有Boat后端的版本"）靠这条规则意外置顶；
+//   ② id12 那类 { name, children } 内联形态的手写版本条目也被判为手动，永远压在
+//     自动同步的新版本之前，导致新版本反而排到列表最底（版本顺序错乱）。
+// 现在改为显式声明：置顶/特殊条目必须在 JSON 里写 pinned: true，其余条目一律尝试
+// 从 name / version / tag 文本中提取版本号并参与统一排序。
+const VERSION_TEXT_RE = /^[vV]?\d+(?:\.\d+)*$/;
+export function normalizeVersionText(text) {
+  const s = String(text ?? '').trim().replace(/^[vV](?=\d)/, '');
+  return VERSION_TEXT_RE.test(s) ? s : null;
+}
+// 返回版本号字符串，或 null（无法识别 → 视为需原样保留的 pinned/特殊条目）
+export function entrySortKey(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const fromPath = entryVersionKey(entry.nextUrl);
+  if (fromPath != null) return fromPath;
+  return normalizeVersionText(entry.tag) ?? normalizeVersionText(entry.version) ?? normalizeVersionText(entry.name);
+}
+// 是否置顶条目：显式 pinned: true，或既无 nextUrl 又解析不出版本号（历史遗留兜底，
+// 保证旧数据里那些真正无法归类的条目不会被误排进版本序列）
+export function isPinnedEntry(entry) {
+  if (!entry || typeof entry !== 'object') return true;
+  if (entry.pinned === true) return true;
+  return entrySortKey(entry) == null;
+}
+
 // ---------- 数据源基线（读本地 data/down/{id}/index.json） ----------
+// 版本范围只统计"非置顶且版本号可解析"的条目：pinned/特殊条目（如 id0 的 Boat 版）
+// 不代表数据源最新版本，不能参与"落后几个版本"的判定。
 export function parseDataSourceIndex(softwareId) {
   const indexPath = join(ROOT, 'data', 'down', String(softwareId), 'index.json');
   if (!existsSync(indexPath)) return { latest: null, entries: [] };
@@ -126,7 +156,8 @@ export function parseDataSourceIndex(softwareId) {
   if (!Array.isArray(entries)) entries = [];
   const versions = [];
   for (const e of entries) {
-    const key = entryVersionKey(e.nextUrl);
+    if (isPinnedEntry(e)) continue;
+    const key = entrySortKey(e);
     if (key != null) versions.push(key);
   }
   if (!versions.length) return { latest: null, entries };
@@ -136,7 +167,14 @@ export function parseDataSourceIndex(softwareId) {
 
 // ---------- 判定版本是否已在数据源内 ----------
 export function versionKnown(entries, version) {
-  return entries.some((e) => entryVersionKey(e.nextUrl) === version);
+  const target = normalizeVersionText(version) ?? String(version);
+  return entries.some((e) => {
+    if (isPinnedEntry(e)) return false;
+    const key = entrySortKey(e);
+    if (key == null) return false;
+    // 比较前统一去 v/V 前缀，避免 v1.0.5 与 1.0.5 被当成两个版本重复同步
+    return (normalizeVersionText(key) ?? key) === target;
+  });
 }
 
 // ---------- GitHub Releases ----------

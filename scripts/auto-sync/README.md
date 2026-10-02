@@ -50,8 +50,11 @@ node scripts/auto-sync/sync.mjs
 
 - **自动生成（新格式）**：`auto/{年}/{月}/{日}/{版本名}.json` —— 年月日取 Release 发布时间转 UTC+8（不补零）；版本名保留 tag 原样（含前导 `v`/`V`），空白与非法文件名字符归一为 `_`。网盘侧对应 `foldcraftlauncher_cn_auto/{id}/{年}/{月}/{日}/{版本名}/`。
 - **旧格式（历史保留，不再写入）**：`{段}/{段}/.../{段}.json`（由版本号按 `.` 拆段而来），解析器对旧格式保持兼容，新旧条目可共存。
-- **手动条目**：index.json 中无版本路径的条目原样透传，永远排在版本条目之前。
-- index.json 的版本条目按版本降序；`default: true` 标记自动只保留在最新版本上。
+- **手动条目**：
+  - **置顶条目**：显式写 `"pinned": true` 的条目原样透传、永远排在所有版本条目之前（典型用例：FCL 的「最后一个有Boat后端的版本」）。置顶条目不参与「数据源最新版本」判定，也不会被 `keepLatest` 清理。
+  - **手写版本条目**：`{ name, children }` 内联形态（无 `nextUrl`）会从 `name` / `tag` / `version` 中解析版本号，与自动条目一起按版本降序统一排序，不再被压到前面。
+  - 兜底：既无 `pinned` 又解析不出版本号的条目仍按置顶处理（历史遗留数据不会被误排进版本序列）。
+- index.json 的版本条目按版本降序；`default: true` 标记自动只保留在最新版本上（置顶条目一律不带 `default`）。
 
 ## 双 job 架构
 
@@ -118,7 +121,7 @@ POST /site/captcha/policy { id, pow_payload }   ← 字段名是 pow_payload（�
 
 1. 打开 [`softwares.json`](softwares.json)，按现有条目格式追加一行（各字段含义见字段名本身与 [`docs/auto-sync-design.md`](../../docs/auto-sync-design.md)）。
 2. 确认 `githubRepo`、`mode`（`arch` 按架构出条目 / `name` 按文件名出条目）、资产过滤与兜底架构。
-3. 特殊结构（子目录 wrapper、name+children 内联、共存版手动条目等）初版**不纳入**，index.json 手动条目原样透传。
+3. 特殊结构（子目录 wrapper、`{name, children}` 内联等）初版**不纳入自动同步**，index.json 手动条目原样透传；其中 `{name, children}` 形态若 `name` 能解析出版本号（如 `v1.0.2`）会参与统一排序，解析不出的需加 `"pinned": true` 才会稳定置顶。
 
 ## 故障排查
 
@@ -126,7 +129,7 @@ POST /site/captcha/policy { id, pow_payload }   ← 字段名是 pow_payload（�
 |---|---|
 | Actions 运行失败（红色） | 查看该次运行日志：登录失败 / 某版本下载失败 / 直链失败，均会输出中文原因；下次运行自动重试 |
 | 某版本一直失败 | 本地手动跑一次看完整日志；常见：GitHub 资产命名变化（改 `softwares.json`）、PoW 链路重试耗尽（偶发，重跑） |
-| index.json 顺序乱了 | 手动条目永远排在版本条目之前，版本条目按版本降序；确认数据源 JSON 未被外部改动破坏 |
+| index.json 顺序乱了 | 置顶条目必须是 `"pinned": true`；手写 `{name, children}` 条目的版本号要能从 `name` 解析（如 `v1.0.2`）。其余版本条目按版本降序自动排列 |
 | 日志报 `41709 请更新页面后使用新版验证` | 请求缺 `X-Cloudreve-Captcha-Protocol: 2` 头，或站点又升了协议版本 —— 查 `h1api.mjs` 的 `CAPTCHA_PROTOCOL` |
 | 日志报 `41701 验证失败，请重试` | 提交 `POST /site/captcha/policy` 时 cookie 不全。必须带 `cloudreve-session` + `cloudreve_observer` + `cloudreve_send` 全部 cookie |
 | 日志报「站点要求交互式验证」 | 站点给该 purpose 开了滑块/点选（`required.interactive > 0`），脚本无法自动完成，需人工处理 |

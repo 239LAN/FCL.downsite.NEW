@@ -6,7 +6,7 @@
 import {
   ctx, SOFTWARES,
   compareVersionsDescending, versionFromTag,
-  entryVersionKey, parseDataSourceIndex,
+  entrySortKey, isPinnedEntry, parseDataSourceIndex,
   fetchReleases,
 } from './lib.mjs';
 
@@ -30,7 +30,7 @@ async function main() {
     try {
       const { latest: dsLatest, entries: origEntries } = parseDataSourceIndex(sw.softwareId);
       ctx.log(`数据源最新版本：${dsLatest || '（无）'}`);
-      if (dsLatest) ctx.log(`数据源版本数：${origEntries.filter((e) => entryVersionKey(e.nextUrl) != null).length}`);
+      if (dsLatest) ctx.log(`数据源版本数：${origEntries.filter((e) => !isPinnedEntry(e) && entrySortKey(e) != null).length}`);
 
       ctx.log(`拉取 GitHub Releases：${sw.githubRepo} …`);
       const releases = await fetchReleases(sw.githubRepo, !!sw.includePrerelease);

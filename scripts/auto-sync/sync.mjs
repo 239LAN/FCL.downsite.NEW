@@ -29,8 +29,8 @@ import * as h1 from './h1api.mjs';
 import {
   ctx, ROOT, SOFTWARES,
   compareVersionsDescending, versionFromTag, datePathFromRelease,
-  entryVersionKey, versionKnown, parseDataSourceIndex,
-  fetchReleases, mapAssetsToEntries,
+  entryVersionKey, entrySortKey, isPinnedEntry, normalizeVersionText, versionKnown,
+  parseDataSourceIndex, fetchReleases, mapAssetsToEntries,
 } from './lib.mjs';
 const log = (msg) => ctx.log(msg);
 
@@ -123,18 +123,24 @@ async function syncVersion(sw, version, release) {
   return { version, files: sized, jsonRel, title: release.name ?? null };
 }
 
-// ---------- 更新 index.json（保留手动条目，新增版本降序插入，default 移到最新） ----------
-// synced：syncVersion 成功返回的对象数组（含 version / jsonRel）
+// ---------- 更新 index.json ----------
+// 排序规则（2026-10-02 修订，见 lib.mjs 的 entrySortKey 注释）：
+//   · 置顶桶（pinned: true，或版本号完全无法识别的历史遗留条目）原样保留、永远排在版本条目之前
+//   · 其余条目（含 { name, children } 内联形态的手写版本条目、旧格式路径条目、自动同步条目）
+//     一律按版本号降序统一排序——手写条目不再因为"没有 nextUrl"而被压到前面
 function updateIndex(softwareId, origEntries, synced) {
-  const manual = [];
+  const pinned = [];
   const versionEntries = []; // { key, entry }
   for (const e of origEntries) {
-    const key = entryVersionKey(e.nextUrl);
-    if (key != null) versionEntries.push({ key, entry: e });
-    else manual.push(e);
+    if (isPinnedEntry(e)) {
+      pinned.push(e);
+      continue;
+    }
+    const key = entrySortKey(e);
+    versionEntries.push({ key, entry: e });
   }
   for (const s of synced) {
-    if (versionEntries.some((x) => x.key === s.version)) continue;
+    if (versionEntries.some((x) => (normalizeVersionText(x.key) ?? x.key) === (normalizeVersionText(s.version) ?? s.version))) continue;
     // name=发布标题（release.name），tag=版本号；key 仍是版本号，用于排序/去重
     versionEntries.push({
       key: s.version,
@@ -142,17 +148,12 @@ function updateIndex(softwareId, origEntries, synced) {
     });
   }
   versionEntries.sort((a, b) => compareVersionsDescending(a.key, b.key));
-  const hadDefault = versionEntries.some((x) => x.entry.default === true);
-  let entries = [...manual, ...versionEntries.map((x) => ({ ...x.entry }))];
-  if (hadDefault && versionEntries.length) {
-    // default 只保留在最新版本上
-    const newest = versionEntries[0].key;
-    entries = entries.map((e) => {
-      const key = entryVersionKey(e.nextUrl);
-      const { default: _d, ...rest } = e;
-      return key === newest ? { ...rest, default: true } : rest;
-    });
-  }
+  // default 只保留在最新的版本条目上（置顶条目一律不带 default）
+  versionEntries.forEach((x, i) => {
+    const { default: _d, ...rest } = x.entry;
+    x.entry = i === 0 ? { ...rest, default: true } : rest;
+  });
+  const entries = [...pinned, ...versionEntries.map((x) => ({ ...x.entry }))];
   const indexPath = join(ROOT, 'data', 'down', String(softwareId), 'index.json');
   writeFileSync(indexPath, JSON.stringify(entries, null, 2));
   return indexPath;
@@ -185,8 +186,9 @@ async function pruneSoftware(sw) {
   }
   if (!Array.isArray(entries)) return [];
 
+  // 置顶条目永不参与清理；其余条目按版本号降序参与 keep 保留
   const vers = entries
-    .map((entry, idx) => ({ idx, key: entryVersionKey(entry.nextUrl), entry }))
+    .map((entry, idx) => ({ idx, key: isPinnedEntry(entry) ? null : entrySortKey(entry), entry }))
     .filter((x) => x.key != null);
   if (vers.length <= keep) return [];
   vers.sort((a, b) => compareVersionsDescending(a.key, b.key));
@@ -204,11 +206,16 @@ async function pruneSoftware(sw) {
       } else {
         log(`  [清理] 版本 ${key} 非新格式路径，无法映射网盘目录，跳过网盘删除`);
       }
-      const jsonRel = String(entry.nextUrl).replace(/^\//, '');
-      const localPath = join(ROOT, jsonRel);
-      if (existsSync(localPath)) {
-        unlinkSync(localPath);
-        log(`  [清理] 已删除本地 ${jsonRel}`);
+      // 只删有真实本地路径的条目：手写 children 条目无 nextUrl，绝不能拼出 "undefined" 去删
+      if (typeof entry.nextUrl === 'string' && entry.nextUrl) {
+        const jsonRel = entry.nextUrl.replace(/^\//, '');
+        const localPath = join(ROOT, jsonRel);
+        if (existsSync(localPath)) {
+          unlinkSync(localPath);
+          log(`  [清理] 已删除本地 ${jsonRel}`);
+        }
+      } else {
+        log(`  [清理] 版本 ${key} 无 nextUrl（内联手写条目），仅从 index.json 移除`);
       }
       pruned.push(key);
     } catch (e) {
@@ -216,9 +223,12 @@ async function pruneSoftware(sw) {
     }
   }
   if (pruned.length) {
+    const prunedSet = new Set(pruned);
     const next = entries.filter((entry) => {
-      const key = entryVersionKey(entry.nextUrl);
-      return key == null || keepSet.has(key); // 手动条目 + 保留版本
+      if (isPinnedEntry(entry)) return true; // 置顶条目原样保留
+      const key = entrySortKey(entry);
+      if (key == null) return true;
+      return keepSet.has(key) || !prunedSet.has(key);
     });
     writeFileSync(indexPath, JSON.stringify(next, null, 2));
     log(`  [清理] ✅ 已更新 index.json（移除 ${pruned.length} 个条目）`);
@@ -327,7 +337,7 @@ async function main() {
     try {
       const { latest: dsLatest, entries: origEntries } = parseDataSourceIndex(sw.softwareId);
       log(`数据源最新版本：${dsLatest || '（无）'}`);
-      if (dsLatest) log(`数据源版本数：${origEntries.filter((e) => entryVersionKey(e.nextUrl) != null).length}`);
+      if (dsLatest) log(`数据源版本数：${origEntries.filter((e) => !isPinnedEntry(e) && entrySortKey(e) != null).length}`);
 
       log(`拉取 GitHub Releases：${sw.githubRepo} …`);
       const releases = await fetchReleases(sw.githubRepo, !!sw.includePrerelease);
@@ -485,4 +495,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   });
 }
 
-export { compareVersionsDescending, datePathFromRelease, entryVersionKey, versionFromTag };
+export { compareVersionsDescending, datePathFromRelease, entryVersionKey, entrySortKey, isPinnedEntry, normalizeVersionText, versionFromTag };
