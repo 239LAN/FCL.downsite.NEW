@@ -342,6 +342,13 @@ html[data-xf-theme="dark"] .mdui-appbar {
   text-shadow: 0 0 4px #000;
 }
 
+table .xf-vertical-sticky-th {
+  position: sticky;
+  left: 0;
+  backdrop-filter: blur(16px);
+  z-index: 1;
+}
+
 /**
  * Toast 临时消息组件样式-首。
  * 独立于 MDUI Snackbar，MD1 风格，与 MDUI 1.0.2 视觉协调。

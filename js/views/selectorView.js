@@ -3,6 +3,7 @@ import { createFilterConfig } from '../domain/downloadFilter.js';
 import { isSafeNavigationUrl } from '../security/content.js';
 import { formatBytes, renderStatus, setFilterIndicator } from './commonView.js';
 import { createCheckbox, createExternalLink, createFluidTable, createMaterialIcon, createPanel, createPanelItem } from './uiComponents.js';
+import { createStickyColumn } from './commonView.js';
 import { t } from '../common/i18n.js';
 
 // 最终表格会删除所有行均为空的列，列名与下载项统一模型一一对应。
@@ -274,7 +275,7 @@ export function createSelectorView(container, stopButton, matchedArchitecture, o
     tbody.appendChild(emptyTr);
 
     table.append(thead, tbody);
-    wrapper.appendChild(table);
+    wrapper.appendChild(createStickyColumn(table, 0));
 
     // 根据当前勾选状态切换行的可见性；筛选面板的勾选变化都会回调到这里。
     const applyFilter = () => {
