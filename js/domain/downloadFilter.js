@@ -7,7 +7,7 @@
  * 类别（按优先级从高到低）：
  * - dataSource：命中数据源配置的 URL 正则白名单（detail.json 的 filter，如 "\\.apk$"）；
  * - system：命中当前系统安装包表达式（systemInfo.js 提供，如 Windows 的 `\.(?:exe|msi)$`
- *   与名称含 windows 的 `(^|[-_.])windows([-_.]|$)`）；
+ *   与名称含 windows 的 `(^|[-_.])windows(?![a-z])`）；
  * - archive：压缩包（由 ARCHIVE_EXTENSIONS 编译出 `\.(?:zip|7z)$`）；
  * - source：源码包（由 SOURCE_EXTENSIONS 编译出 `\.(?:tar\.gz|tar\.xz|tgz|txz)$`）。
  *
@@ -41,8 +41,8 @@ const CATEGORY_ORDER = ['dataSource', 'system', 'archive', 'source'];
 /**
  * 判断下载 URL 是否命中表达式列表。
  * 表达式是作用于下载地址的正则片段（大小写不敏感）：系统类别由 systemInfo.js 给出，
- * 既含要求扩展名结尾的 `\.(?:exe|msi)$`，也含命中名称中段的 `(^|[-_.])windows([-_.]|$)`，
- * 从而覆盖 xxx-windows-v1.2.3.zip 这类名称含系统的包；
+ * 既含要求扩展名结尾的 `\.(?:exe|msi)$`，也含命中名称中段的 `(^|[-_.])windows(?![a-z])`，
+ * 从而覆盖 xxx-windows-v1.2.3.zip、app-win64.zip 这类名称含系统（含 win32/win64 数字粘连）的包；
  * 压缩包/源码包类别传入扩展名，由下方按后缀编译。
  * 非法正则必须 try/catch 防护，避免配置错误导致渲染崩溃。
  * @param {string} url 下载地址

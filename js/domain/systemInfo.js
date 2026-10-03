@@ -175,19 +175,21 @@ export function buildSystemMessages(system) {
  *
  * 表达式按"正则"而非"扩展名"维护，因此既要求文件名以该扩展名结尾（避免 .apk.sha256、
  * .exe.txt 之类被误判），又能直接容纳命中名称中段的写法，例如 windows 的
- * `(^|[-_.])(?:windows|win)([-_.]|$)` 能捞起 xxx-windows-v1.2.3.zip 这类含系统名的包。
- * 片段由 downloadFilter.js 拼成完整正则后对下载地址匹配，写法须与那里保持一致：
- * 不加 /i（调用方统一按小写处理），不加 ^...$ 锚点（由片段自带边界）。
+ * `(^|[-_.])(?:windows|win)(?![a-z])` 能捞起 xxx-windows-v1.2.3.zip 这类含系统名的包。
+ * 中段片段的后边界是"不紧跟字母"的负向断言，而非必须是分隔符：win32/win64、linux64、
+ * osx64 这类数字粘连命名同样命中，而 winery、swing 这类字母粘连词仍被前/后边界排除。
+ * 片段由 downloadFilter.js 统一加上 i 标志后对下载地址匹配（故 [a-z] 同时挡得住大写），
+ * 片段自身不写 ^...$ 锚点（由片段自带边界）。
  *
  * 压缩包/源码包不属于任何系统的原生格式，由下载表格筛选模块（downloadFilter.js）单独分类。
  * HarmonyOS 为纯血鸿蒙（HarmonyOS NEXT），不兼容 Android，仅认 .hap（应用安装包）与 .app（应用市场分发格式）。
  */
 const SYSTEM_PATTERNS = {
-  android: ['\\.(?:apk|apks|xapk|apkm)$', '(^|[-_.])android([-_.]|$)'],
-  windows: ['\\.(?:exe|msi|msix|appx|appxbundle|msixbundle)$', '(^|[-_.])(?:windows|win)([-_.]|$)'],
-  'mac os': ['\\.(?:dmg|pkg)$', '(^|[-_.])(?:mac|macos|osx|darwin)([-_.]|$)'],
-  linux: ['\\.(?:appimage|deb|rpm|flatpak|snap)$', '(^|[-_.])linux([-_.]|$)'],
-  harmonyos: ['\\.(?:hap|app)$', '(^|[-_.])(?:harmonyos|openharmony)([-_.]|$)'],
+  android: ['\\.(?:apk|apks|xapk|apkm)$', '(^|[-_.])android(?![a-z])'],
+  windows: ['\\.(?:exe|msi|msix|appx|appxbundle|msixbundle)$', '(^|[-_.])(?:windows|win)(?![a-z])'],
+  'mac os': ['\\.(?:dmg|pkg)$', '(^|[-_.])(?:mac|macos|osx|darwin)(?![a-z])'],
+  linux: ['\\.(?:appimage|deb|rpm|flatpak|snap)$', '(^|[-_.])linux(?![a-z])'],
+  harmonyos: ['\\.(?:hap|app)$', '(^|[-_.])(?:harmonyos|openharmony)(?![a-z])'],
 };
 
 /**
