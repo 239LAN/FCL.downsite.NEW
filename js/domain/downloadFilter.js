@@ -5,10 +5,16 @@
  * （autoSelect.js）一样，调用方无需关心筛选策略的细节。
  *
  * 类别（按优先级从高到低）：
- * - dataSource：命中数据源配置的 URL 正则白名单（detail.json 的 filter，如 ".apk"）；
- * - system：命中当前系统安装包扩展名白名单（如 Windows 的 exe/msi）；
- * - archive：压缩包（zip、7z）；
- * - source：源码包（tar.gz、tar.xz、tgz、txz）。
+ * - dataSource：命中数据源配置的 URL 正则白名单（detail.json 的 filter，如 "\\.apk$"）；
+ * - system：命中当前系统安装包表达式（systemInfo.js 提供，如 Windows 的 `\.(?:exe|msi)$`
+ *   与名称含 windows 的 `(^|[-_.])windows([-_.]|$)`）；
+ * - archive：压缩包（由 ARCHIVE_EXTENSIONS 编译出 `\.(?:zip|7z)$`）；
+ * - source：源码包（由 SOURCE_EXTENSIONS 编译出 `\.(?:tar\.gz|tar\.xz|tgz|txz)$`）。
+ *
+ * 四类条件统一按正则处理（均大小写不敏感），筛选面板的标签也统一展示正则本身
+ * （而非"后缀列表"），好让用户看到的条件与实际生效的匹配规则完全一致。
+ * 匹配对象是完整的下载 URL（含 query string），不是单独的 pathname。
+ * 其中 dataSource 是唯一由站点作者手写的正则，其余三类由本模块与 systemInfo.js 生成。
  *
  * 可见性按优先级管线计算，与 autoSelect.js 的步骤管道同构：
  * 每个勾选的类别从"上一个筛剩下的"文件中领取自己的命中项，未命中则继续传给下一个；
@@ -23,45 +29,66 @@
 import { logWarn } from '../common/logger.js';
 import { t } from '../common/i18n.js';
 
-/** 压缩包扩展名（不含点，小写）。 */
+/** 压缩包扩展名（不含点/带点均可，编译为"以该扩展名结尾"的正则片段）。 */
 export const ARCHIVE_EXTENSIONS = ['zip', '7z'];
 
-/** 源码包扩展名（不含点，小写；tar.gz 等复合扩展名整体匹配）。 */
+/** 源码包扩展名（tar.gz 等复合扩展名整体匹配，编译为"以该扩展名结尾"的正则片段）。 */
 export const SOURCE_EXTENSIONS = ['tar.gz', 'tar.xz', 'tgz', 'txz'];
 
 /** 类别的优先级顺序（从高到低）；"显示全部"隐含为最高优先级，先于所有类别。 */
 const CATEGORY_ORDER = ['dataSource', 'system', 'archive', 'source'];
 
 /**
- * 判断下载 URL 是否命中扩展名列表。
- * 只比较 URL 路径部分的文件扩展名（大小写不敏感），支持 tar.gz 等复合扩展名。
+ * 判断下载 URL 是否命中表达式列表。
+ * 表达式是作用于下载地址的正则片段（大小写不敏感）：系统类别由 systemInfo.js 给出，
+ * 既含要求扩展名结尾的 `\.(?:exe|msi)$`，也含命中名称中段的 `(^|[-_.])windows([-_.]|$)`，
+ * 从而覆盖 xxx-windows-v1.2.3.zip 这类名称含系统的包；
+ * 压缩包/源码包类别传入扩展名，由下方按后缀编译。
+ * 非法正则必须 try/catch 防护，避免配置错误导致渲染崩溃。
  * @param {string} url 下载地址
- * @param {Array<string>} extensions 扩展名列表（不含点，小写）
+ * @param {Array<string>} patterns 正则片段列表
  * @returns {boolean} 命中返回 true
  */
-function matchesExtensions(url, extensions) {
-  try {
-    const pathname = new URL(url, window.location.href).pathname.toLowerCase();
-    return extensions.some((ext) => pathname.endsWith(`.${ext.toLowerCase()}`));
-  } catch (_) {
-    return false;
-  }
+function matchesPatterns(url, patterns) {
+  return patterns.some((pattern) => {
+    try {
+      return new RegExp(pattern, 'i').test(url);
+    } catch (error) {
+      logWarn(error, t('logger.context.invalidFilterRegex', { pattern }));
+      return false;
+    }
+  });
+}
+
+/**
+ * 把扩展名列表编译为"以该扩展名结尾"的正则片段。
+ * 同时兼容带点（`.tar.gz`）与不带点（`zip`）两种写法，点号一律转义，
+ * 使 .zipx、.7z.001 之类的长扩展名不会被误判为命中。
+ * @param {Array<string>} extensions 扩展名列表
+ * @returns {Array<string>} 正则片段列表
+ */
+function compileSuffixPatterns(extensions) {
+  return extensions.map((ext) => `\\.${String(ext).replace(/^\.+/, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
 }
 
 /**
  * 构建筛选配置：类别列表（含标签、是否启用与默认勾选）、
  * 默认勾选状态、文件归类函数与可见性判定。
  * @param {object} [options]
- * @param {Array<string>} [options.filter] 数据源配置的 URL 正则白名单（detail.json 的 filter）
- * @param {Array<string>} [options.osExtensions] 当前系统安装包扩展名白名单（不含点，小写）
+ * @param {Array<string>} [options.filter] 数据源配置的 URL 正则白名单（detail.json 的 filter）；
+ *   手写正则，作用于完整下载 URL，大小写不敏感，非法表达式会被跳过并记录日志
+ * @param {Array<string>} [options.osPatterns] 当前系统安装包正则片段（systemInfo.js 提供）
  * @param {string} [options.osName] 当前系统显示名（UAParser os.name，如 "Windows"）
  * @returns {{categories: Array<{key: string, label: string, enabled: boolean, defaultChecked: boolean}>, createDefaultState: () => {showAll: boolean, checked: Record<string, boolean>}, classify: (item: object) => Set<string>, isVisible: (categoryKeys: Set<string>, state: object) => boolean}}
  */
-export function createFilterConfig({ filter, osExtensions = [], osName = '' } = {}) {
+export function createFilterConfig({ filter, osPatterns = [], osName = '' } = {}) {
   const patterns = Array.isArray(filter)
     ? filter.filter((pattern) => typeof pattern === 'string' && pattern)
     : [];
-  const systemExtensions = osExtensions.map((ext) => ext.toLowerCase());
+  // 系统类别用的是正则片段（可为空），压缩包/源码包类别用的是扩展名，各自编译一次复用。
+  const systemPatterns = osPatterns.filter((pattern) => typeof pattern === 'string' && pattern);
+  const archivePatterns = compileSuffixPatterns(ARCHIVE_EXTENSIONS);
+  const sourcePatterns = compileSuffixPatterns(SOURCE_EXTENSIONS);
   // 类别顺序即面板中勾选框的展示顺序，也即优先级顺序；enabled 为 false 的类别在面板中不渲染。
   // defaultChecked 为 true 的类别在首屏默认勾选。
   const none = t('common.filterCategory.none');
@@ -76,20 +103,20 @@ export function createFilterConfig({ filter, osExtensions = [], osName = '' } = 
       key: 'system',
       label: t('common.filterCategory.system', {
         osName,
-        items: systemExtensions.map((ext) => `.${ext}`).join(', ') || none,
+        items: systemPatterns.join(', ') || none,
       }),
-      enabled: systemExtensions.length > 0,
+      enabled: systemPatterns.length > 0,
       defaultChecked: true,
     },
     {
       key: 'archive',
-      label: t('common.filterCategory.archive', { items: ARCHIVE_EXTENSIONS.map((ext) => `.${ext}`).join(', ') }),
+      label: t('common.filterCategory.archive', { items: archivePatterns.join(', ') }),
       enabled: true,
       defaultChecked: false,
     },
     {
       key: 'source',
-      label: t('common.filterCategory.source', { items: SOURCE_EXTENSIONS.map((ext) => `.${ext}`).join(', ') }),
+      label: t('common.filterCategory.source', { items: sourcePatterns.join(', ') }),
       enabled: true,
       defaultChecked: false,
     },
@@ -120,18 +147,22 @@ export function createFilterConfig({ filter, osExtensions = [], osName = '' } = 
   function classify(item) {
     const url = item?.downloadUrl || '';
     const keys = new Set();
-    // 数据源 filter 是 URL 正则白名单；非法正则必须用 try/catch 防护，避免渲染崩溃。
+    // 数据源 filter 是作用在"完整下载 URL"上的正则白名单（含 query string），
+    // 由用户在 detail.json 里手写，因此：
+    // - 大小写不敏感（与 system/archive/source 三类一致），".apk" 同样能命中 .APK；
+    // - 非法的正则必须 try/catch 防护，避免配置写错导致整个表格渲染崩溃。
+    // 注意 filter 里写 ".apk" 时点号是"任意字符"，要严格后缀请写成 "\\.apk$"。
     if (patterns.some((pattern) => {
       try {
-        return new RegExp(pattern).test(url);
+        return new RegExp(pattern, 'i').test(url);
       } catch (error) {
         logWarn(error, t('logger.context.invalidFilterRegex', { pattern }));
         return false;
       }
     })) keys.add('dataSource');
-    if (matchesExtensions(url, systemExtensions)) keys.add('system');
-    if (matchesExtensions(url, ARCHIVE_EXTENSIONS)) keys.add('archive');
-    if (matchesExtensions(url, SOURCE_EXTENSIONS)) keys.add('source');
+    if (matchesPatterns(url, systemPatterns)) keys.add('system');
+    if (matchesPatterns(url, archivePatterns)) keys.add('archive');
+    if (matchesPatterns(url, sourcePatterns)) keys.add('source');
     return keys;
   }
 

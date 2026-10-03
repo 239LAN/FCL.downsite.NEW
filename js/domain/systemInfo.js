@@ -170,30 +170,38 @@ export function buildSystemMessages(system) {
 }
 
 /**
- * 系统 → 下载文件扩展名白名单。
- * 键为 UAParser os.name 的原始值（小写比较）；值为该平台常见的安装包/可执行文件扩展名（不含点）。
+ * 系统 → 下载文件匹配表达式。
+ * 键为 UAParser os.name 的原始值（小写比较）；值为该平台常见的安装包/可执行文件正则片段。
+ *
+ * 表达式按"正则"而非"扩展名"维护，因此既要求文件名以该扩展名结尾（避免 .apk.sha256、
+ * .exe.txt 之类被误判），又能直接容纳命中名称中段的写法，例如 windows 的
+ * `(^|[-_.])(?:windows|win)([-_.]|$)` 能捞起 xxx-windows-v1.2.3.zip 这类含系统名的包。
+ * 片段由 downloadFilter.js 拼成完整正则后对下载地址匹配，写法须与那里保持一致：
+ * 不加 /i（调用方统一按小写处理），不加 ^...$ 锚点（由片段自带边界）。
+ *
  * 压缩包/源码包不属于任何系统的原生格式，由下载表格筛选模块（downloadFilter.js）单独分类。
  * HarmonyOS 为纯血鸿蒙（HarmonyOS NEXT），不兼容 Android，仅认 .hap（应用安装包）与 .app（应用市场分发格式）。
  */
-const SYSTEM_EXTENSIONS = {
-  android: ['apk', 'apks', 'xapk', 'apkm'],
-  windows: ['exe', 'msi', 'msix', 'appx', 'appxbundle', 'msixbundle'],
-  'mac os': ['dmg', 'pkg'],
-  linux: ['AppImage', 'deb', 'rpm', 'flatpak', 'snap'],
-  harmonyos: ['hap', 'app'],
+const SYSTEM_PATTERNS = {
+  android: ['\\.(?:apk|apks|xapk|apkm)$', '(^|[-_.])android([-_.]|$)'],
+  windows: ['\\.(?:exe|msi|msix|appx|appxbundle|msixbundle)$', '(^|[-_.])(?:windows|win)([-_.]|$)'],
+  'mac os': ['\\.(?:dmg|pkg)$', '(^|[-_.])(?:mac|macos|osx|darwin)([-_.]|$)'],
+  linux: ['\\.(?:appimage|deb|rpm|flatpak|snap)$', '(^|[-_.])linux([-_.]|$)'],
+  harmonyos: ['\\.(?:hap|app)$', '(^|[-_.])(?:harmonyos|openharmony)([-_.]|$)'],
 };
 
 /**
- * 根据系统名称返回下载文件扩展名白名单（不含点，小写比较用）。
- * 仅包含该系统的原生安装包扩展名；压缩包/源码包由下载表格筛选模块单独分类。
+ * 根据系统名称返回下载文件匹配表达式。
+ * 仅包含该系统的原生安装包表达式；压缩包/源码包由下载表格筛选模块单独分类。
  * 未识别系统返回空数组（不启用系统筛选），避免未知平台误隐藏文件。
  * @param {string|undefined} osName UAParser 返回的系统名，如 "Android"、"Windows"、"Mac OS"、"Linux"
- * @returns {Array<string>} 扩展名列表（小写），空数组表示不筛选
+ * @returns {Array<string>} 正则片段列表，空数组表示不筛选
  */
-export function getSystemDownloadExtensions(osName) {
+export function getSystemDownloadPatterns(osName) {
   const normalized = String(osName || '').toLowerCase();
-  const base = SYSTEM_EXTENSIONS[normalized];
-  // 未识别系统不启用筛选；已知系统返回其原生安装包扩展名。
+  const base = SYSTEM_PATTERNS[normalized];
+  // 未识别系统不启用筛选；已知系统返回其原生安装包表达式。
   if (!base) return [];
-  return [...new Set(base.map((ext) => ext.toLowerCase()))];
+  // 去重但保留顺序，便于筛选面板标签稳定展示。
+  return [...new Set(base)];
 }
