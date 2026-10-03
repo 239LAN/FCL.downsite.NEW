@@ -17,6 +17,7 @@ export function adaptLinkong(payload, context) {
   return releases.map((release, index) => ({
     name: release.version || release.title || t('common.adapters.versionN', { index: index + 1 }),
     default: index === 0,
+    // release 级信息（published_at、prerelease 等）经 release 上下文传给每个叶子。
     children: (release.assets || []).map((asset) =>
       normalizeDownloadItem(
         {
@@ -25,6 +26,7 @@ export function adaptLinkong(payload, context) {
         },
         context.source,
         release.version,
+        release,
       ),
     ),
   }));

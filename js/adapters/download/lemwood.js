@@ -21,6 +21,7 @@ export function adaptLemwood(payload, context, { latestOnly = false } = {}) {
   return releases.map((release, index) => ({
     name: release.name || release.tag_name || t('common.adapters.versionN', { index: index + 1 }),
     default: index === 0,
-    children: (release.assets || []).map((asset) => normalizeDownloadItem(asset, context.source, release.name)),
+    // release 级信息（tag_name、launcher、published_at）经 release 上下文传给每个叶子。
+    children: (release.assets || []).map((asset) => normalizeDownloadItem(asset, context.source, release.name, release)),
   }));
 }

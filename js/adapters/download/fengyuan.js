@@ -19,13 +19,15 @@ export function adaptFengyuan(payload, context) {
     const version = asset.version || t('common.adapters.unknownVersion');
     if (!grouped.has(version)) grouped.set(version, []);
     // 枫源只返回相对 download_path，必须以 API 所在站点为基准补成绝对下载地址。
+    // 枫源把条目平铺在 assets 里，没有独立的 release 对象，故把 asset 自身当 release 传入
+    // （它携带 prerelease；但不含发布时间，所以版本节点不会出现 publishedAt）。
     grouped.get(version).push(normalizeDownloadItem({
       ...asset,
       architecture: asset.architecture === 'None' && asset.file_name?.includes('Zalith')
         ? 'all'
         : asset.architecture,
       downloadUrl: new URL(asset.download_path, context.baseUrl).href,
-    }, context.source, version));
+    }, context.source, version, asset));
   }
   // 不依赖 API 返回顺序，防止“旧版本排在第一项”导致默认下载错误。
   const versions = [...grouped.keys()].sort(compareVersionsDescending);

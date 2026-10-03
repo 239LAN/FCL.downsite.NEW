@@ -6,13 +6,22 @@ import { createCheckbox, createExternalLink, createFluidTable, createMaterialIco
 import { t } from '../common/i18n.js';
 
 // 最终表格会删除所有行均为空的列，列名与下载项统一模型一一对应。
+// URL 之后的列都是线路 API 提供才显示的扩展元数据：上游没提供的线路整列为空，会被自动删除，
+// 因此低频信息排在后面既不影响主列阅读，也不会在未提供该信息的线路上留下空列。
 const COLUMN_DEFINITIONS = [
   ['common.actions', 'action'],
   ['common.architecture', 'architecture'],
   ['common.description', 'description'],
   ['common.size', 'size'],
   ['common.displayName', 'name'],
+  ['common.prerelease', 'prerelease'],
+  ['common.publishedAt', 'publishedAt'],
+  ['common.sha256', 'sha256'],
+  ['common.contentType', 'contentType'],
   ['URL', 'url'],
+  ['common.assetId', 'assetId'],
+  ['common.versionTag', 'tagName'],
+  ['common.launcher', 'launcher'],
 ];
 
 /** 建立 data-selector-level 标记的层级容器。level 从 0 开始递增。 */
@@ -186,6 +195,15 @@ export function createSelectorView(container, stopButton, matchedArchitecture, o
           size: item.size != null ? formatBytes(item.size) : '',
           name: item.name || '',
           url: item.downloadUrl,
+          publishedAt: item.publishedAt || '',
+          sha256: item.sha256 || '',
+          // prerelease 是三态：true/false 都有意义，null（上游没给）才算空，列才会被删除。
+          prerelease: item.prerelease === true ? t('common.prereleaseYes')
+            : item.prerelease === false ? t('common.prereleaseNo') : '',
+          contentType: item.contentType || '',
+          assetId: item.assetId != null ? String(item.assetId) : '',
+          tagName: item.tagName || '',
+          launcher: item.launcher || '',
         },
       };
     });
@@ -231,6 +249,11 @@ export function createSelectorView(container, stopButton, matchedArchitecture, o
         } else if (key === 'url') {
           cell.className = 'mdui-typo';
           cell.appendChild(createExternalLink(row.item.downloadUrl, row.item.downloadUrl));
+        } else if (key === 'sha256') {
+          // 显示完整摘要，绝不截断：本站主要用户在手机上，悬浮提示（title）根本用不了，
+          // 截断后用户就再也拿不到完整校验值了。宽度交给表格横向滚动承担。
+          cell.className = 'xf-inline-code';
+          cell.textContent = row.values.sha256;
         } else {
           cell.textContent = row.values[key];
         }

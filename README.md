@@ -80,6 +80,7 @@ docs/                   开发文档
 - **`http/client.js`** 统一处理请求、超时、取消、错误和页面内缓存。
 - **`security/content.js`** 是所有远程 HTML/Markdown 进 DOM 前的安全边界（marked + DOMPurify 懒加载 + SRI）。
 - **`adapters/download/`** 每个文件只适配一种下载源的数据结构，最终统一输出 `name`、`version`、`architecture`、`size`、`description`、`downloadUrl`、`available` 和 `source`。路由键是 `data/mirror.json` 的 `apiVer`，未登记协议回退 `plain` 适配器。
+  线路 API 额外提供的信息（`publishedAt`、`sha256`、`prerelease`、`contentType`、`assetId`、`tagName`、`launcher`）也一并归一化到统一下载项上：上游没提供的线路留空，下载表格按「整列为空则删除该列」自动取舍，因此各线路无需单独适配。其中 `publishedAt` 是 release 级信息，同一版本内每行相同。
 
 ## 收录资源
 
