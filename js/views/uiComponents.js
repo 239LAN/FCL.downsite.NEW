@@ -255,3 +255,24 @@ export function createTextField({ isFloatingLabel, divClassName = [], pattern, r
 export function showSnackbar(content, options = {}) {
   return showToast(content, options);
 }
+
+/**
+ * 创建 MDUI 勾选框。
+ * @param {string} label 勾选框文本
+ * @param {boolean} checked 初始勾选状态
+ * @param {(checked: boolean) => void} onChange 勾选状态变化回调
+ * @returns {HTMLLabelElement}
+ */
+export function createCheckbox(label, checked, onChange) {
+  const labelEl = document.createElement('label');
+  labelEl.className = 'mdui-checkbox';
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.checked = checked;
+  const icon = document.createElement('i');
+  icon.className = 'mdui-checkbox-icon';
+  const text = document.createTextNode(` ${label}`);
+  labelEl.append(input, icon, text);
+  input.addEventListener('change', () => onChange(input.checked));
+  return labelEl;
+}

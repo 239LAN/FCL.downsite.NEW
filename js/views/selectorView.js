@@ -2,7 +2,7 @@ import { inferArchitecture } from '../domain/systemInfo.js';
 import { createFilterConfig } from '../domain/downloadFilter.js';
 import { isSafeNavigationUrl } from '../security/content.js';
 import { formatBytes, renderStatus, setFilterIndicator } from './commonView.js';
-import { createExternalLink, createFluidTable, createMaterialIcon, createPanel, createPanelItem } from './uiComponents.js';
+import { createCheckbox, createExternalLink, createFluidTable, createMaterialIcon, createPanel, createPanelItem } from './uiComponents.js';
 import { t } from '../common/i18n.js';
 
 // 最终表格会删除所有行均为空的列，列名与下载项统一模型一一对应。
@@ -22,27 +22,6 @@ function createLevel(container, level) {
   section.dataset.selectorLevel = String(level);
   container.appendChild(section);
   return section;
-}
-
-/**
- * 创建 MDUI 勾选框。
- * @param {string} label 勾选框文本
- * @param {boolean} checked 初始勾选状态
- * @param {(checked: boolean) => void} onChange 勾选状态变化回调
- * @returns {HTMLLabelElement}
- */
-function createCheckbox(label, checked, onChange) {
-  const labelEl = document.createElement('label');
-  labelEl.className = 'mdui-checkbox';
-  const input = document.createElement('input');
-  input.type = 'checkbox';
-  input.checked = checked;
-  const icon = document.createElement('i');
-  icon.className = 'mdui-checkbox-icon';
-  const text = document.createTextNode(` ${label}`);
-  labelEl.append(input, icon, text);
-  input.addEventListener('change', () => onChange(input.checked));
-  return labelEl;
 }
 
 /**
