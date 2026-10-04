@@ -5,68 +5,12 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ENV, RETRY } from './config.mjs';
+import { logger } from './logger.mjs';
 
 // ---------- 路径 ----------
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..', '..');
 const SOFTWARES = JSON.parse(readFileSync(join(HERE, 'softwares.json'), 'utf8'));
-
-// ---------- 日志（可变 ctx.log 以便调用方在作用域内拦截） ----------
-const stamp = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
-
-export const ctx = {
-  runLog: [],
-  summaryLines: [], // GITHUB_STEP_SUMMARY markdown 行
-  _timers: {},
-  log(msg) {
-    const line = `[${stamp()}] ${msg}`;
-    this.runLog.push(line);
-    console.log(line);
-  },
-  // GHA 折叠分组：Actions UI 可折叠；本地退化为普通分隔行
-  group(title) {
-    const plain = `[${stamp()}] ══ ${title} ══`;
-    this.runLog.push(plain);
-    if (ENV.IS_GHA) {
-      console.log(`::group::${title}`);
-    } else {
-      console.log(plain);
-    }
-  },
-  endGroup() {
-    if (ENV.IS_GHA) console.log('::endgroup::');
-  },
-  // GHA 注释标记（错误/警告），同时写普通日志行
-  error(msg) {
-    if (ENV.IS_GHA) console.log(`::error::${msg}`);
-    this.log(`❌ ${msg}`);
-  },
-  warn(msg) {
-    if (ENV.IS_GHA) console.log(`::warning::${msg}`);
-    this.log(`⚠ ${msg}`);
-  },
-  // 阶段计时
-  start(name) {
-    this._timers[name] = Date.now();
-    return this._timers[name];
-  },
-  end(name) {
-    const ms = Date.now() - (this._timers[name] || Date.now());
-    delete this._timers[name];
-    return ms;
-  },
-  // 汇总页（GITHUB_STEP_SUMMARY）收集
-  sum(text) {
-    this.summaryLines.push(text);
-  },
-  async flushSummary() {
-    const p = process.env.GITHUB_STEP_SUMMARY;
-    if (p && this.summaryLines.length) {
-      const fs = await import('node:fs');
-      fs.appendFileSync(p, this.summaryLines.join('\n') + '\n');
-    }
-  },
-};
 
 // ---------- 版本比较（与前端 js/adapters/download/common.js 一致） ----------
 const VERSION_NUMBER = /\d+/g;
@@ -93,6 +37,26 @@ export function versionFromTag(tag) {
 export function datePathFromRelease(release) {
   const shifted = new Date(new Date(release.published_at).getTime() + 8 * 3600 * 1000);
   return `${shifted.getUTCFullYear()}/${shifted.getUTCMonth() + 1}/${shifted.getUTCDate()}`;
+}
+
+// ---------- 日志展示用小工具 ----------
+// 字节数 → 人类可读（1024 进制，保留 1 位小数）；非法值返回 '?'
+export function formatBytes(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n < 0) return '?';
+  if (n < 1024) return `${n} B`;
+  const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+  let value = n / 1024;
+  let i = 0;
+  while (value >= 1024 && i < units.length - 1) { value /= 1024; i += 1; }
+  return `${value.toFixed(1)} ${units[i]}`;
+}
+
+// ISO 时间 → UTC+8 "YYYY-MM-DD HH:mm"
+export function formatCst(iso) {
+  const shifted = new Date(new Date(iso).getTime() + 8 * 3600 * 1000);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${shifted.getUTCFullYear()}-${p(shifted.getUTCMonth() + 1)}-${p(shifted.getUTCDate())} ${p(shifted.getUTCHours())}:${p(shifted.getUTCMinutes())}`;
 }
 
 // ---------- 从 index.json 条目反解版本名 ----------
@@ -202,7 +166,7 @@ export async function fetchReleasesPage(githubRepo, includePrerelease, page = 1)
       };
     } catch (e) {
       lastErr = e;
-      if (attempt < RETRY.GENERIC_ATTEMPTS) ctx.log(`  [GitHub] 拉取失败（第${attempt}次）：${e.message}，重试…`);
+      if (attempt < RETRY.GENERIC_ATTEMPTS) logger.log(`[GitHub] 拉取失败（第 ${attempt} 次）：${e.message}，重试…`);
     }
   }
   throw new Error(`GitHub 拉取失败：${lastErr?.message || '未知'}`);

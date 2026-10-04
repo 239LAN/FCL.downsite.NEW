@@ -9,10 +9,22 @@
 
 - `sync.mjs`：主流程（检测 → 离线下载 → 直链 → 写 JSON → 分软件提交 → push）
 - `probe.mjs`：预探测（只读，无候选时跳过 sync job）
-- `lib.mjs`：纯函数与共享状态
+- `lib.mjs`：纯函数（版本比较、路径映射、Releases 拉取等）
+- `logger.mjs`：统一日志（层级缩进、GHA 折叠分组/注解、commit 正文采集、汇总页）
 - `h1api.mjs`：huang1111 API 封装（含新版验证链路与 PoW 求解）
 - `config.mjs`：环境变量与常量（**改配置看这里**）
 - `softwares.json`：软件映射表（**有哪些软件看这里**）
+
+## 日志
+
+日志由 `logger.mjs` 统一输出，约定如下：
+
+- **不带时间戳**：GitHub Actions 已自带每行上报时间
+- **层级缩进**：由作用域自动生成（`phase` 阶段 → `scope` 软件/版本），调用方不再手拼前导空格
+- **GHA 集成**：自动输出折叠分组（`::group::`）与注解（`::error::` / `::warning::`）；这些控制指令只走控制台、不进入内容流
+- **提交正文**：`beginCapture()` / `endCapture()` 收集指定范围（每个软件）的正文行作为 commit 正文，自动排除 GHA 控制指令
+- **不重复重放**：日志在产生的当下即输出，运行结束不再把整份日志再打印一遍
+- **汇总页**：`sum()` 收集的 markdown 行最后一次性写入 `$GITHUB_STEP_SUMMARY`
 
 ## 触发
 

@@ -64,6 +64,7 @@
 import { webcrypto } from 'node:crypto';
 
 import { ENV, RETRY, TIMING, LIMIT } from './config.mjs';
+import { formatBytes } from './lib.mjs';
 
 const BASE = ENV.HOST + '/api/v3';
 const ORIGIN = ENV.HOST;
@@ -88,6 +89,12 @@ const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
 function logMsg(log, msg) {
   if (typeof log === 'function') log(msg);
+}
+
+// 账号脱敏（日志展示用）：保留前 2 位，其余以 * 代替
+function maskUser(user) {
+  const s = String(user || '');
+  return s.length <= 2 ? '*'.repeat(s.length) : s.slice(0, 2) + '*'.repeat(s.length - 2);
 }
 
 // ---------- cookie / CSRF ----------
@@ -171,7 +178,7 @@ async function genericAttempts(fn, label, log, attempts = RETRY.GENERIC_ATTEMPTS
       return await fn();
     } catch (e) {
       lastErr = e;
-      if (i < attempts) logMsg(log, `  [${label}] 第${i}次失败（${e.message}），重试…`);
+      if (i < attempts) logMsg(log, `[${label}] 第 ${i} 次失败：${e.message}，重试…`);
     }
   }
   throw lastErr;
@@ -233,7 +240,7 @@ async function solvePow(challenge, log) {
     ));
     if (bits.length === target.length && bits.every((b, i) => b === target[i])) {
       if (typeof log === 'function' && counter > 0) {
-        logMsg(log, `  [PoW] 命中 counter=${counter}（试了 ${counter + 1} 个，用时 ${((Date.now() - t0) / 1000).toFixed(1)}s）`);
+        logMsg(log, `[PoW] 命中 counter=${counter}（试了 ${counter + 1} 个，用时 ${((Date.now() - t0) / 1000).toFixed(1)}s）`);
       }
       return counter;
     }
@@ -243,7 +250,7 @@ async function solvePow(challenge, log) {
     }
     if (typeof log === 'function' && now - lastLog >= TIMING.POW_PROGRESS_INTERVAL_MS) {
       lastLog = now;
-      logMsg(log, `  [PoW] 求解中… ${counter + 1}/${counterLimit}（${((now - t0) / 1000).toFixed(1)}s）`);
+      logMsg(log, `[PoW] 求解中… ${counter + 1}/${counterLimit}（${((now - t0) / 1000).toFixed(1)}s）`);
     }
   }
   return null; // counterLimit 内未找到（正常不会发生）
@@ -303,7 +310,7 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
   let lastDetail = '';
 
   for (let attempt = 1; attempt <= RETRY.VERIFY_ATTEMPTS; attempt += 1) {
-    logMsg(log, `[${label}] 第 ${attempt}/${RETRY.VERIFY_ATTEMPTS} 次：正常请求`);
+    logMsg(log, `[${label}] 第 ${attempt}/${RETRY.VERIFY_ATTEMPTS} 次：请求 ${method} ${url}`);
 
     let r;
     try {
@@ -314,14 +321,14 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
       );
     } catch (e) {
       lastDetail = `请求异常：${e.message}`;
-      logMsg(log, `  [${label}] ${lastDetail}，重试`);
+      logMsg(log, `[${label}] ${lastDetail}，重试`);
       continue;
     }
 
     if (isSuccess(r)) return { ok: true, response: r };
     if (isTerminalFailure(r)) {
       lastDetail = `终态错误 code=${r.json?.code}（${r.json?.msg || ''}），重试无意义`;
-      logMsg(log, `  [${label}] ❌ ${lastDetail}`);
+      logMsg(log, `[${label}] ❌ ${lastDetail}`);
       return { ok: false, response: r };
     }
     if (isInternalFailure(r)) {
@@ -330,7 +337,7 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
     if (isRateLimited(r)) {
       const wait = cooldownMs(r);
       lastDetail = `限流 code=41702，退避 ${(wait / 1000).toFixed(0)}s`;
-      logMsg(log, `  [${label}] ${lastDetail}`);
+      logMsg(log, `[${label}] ${lastDetail}`);
       await sleep(wait);
       continue;
     }
@@ -340,13 +347,13 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
       const policy = r.json?.data;
       if (!policy || typeof policy.id !== 'string') {
         lastDetail = '41700 响应缺少 policy.id';
-        logMsg(log, `  [${label}] ${lastDetail}，重试`);
+        logMsg(log, `[${label}] ${lastDetail}，重试`);
         continue;
       }
       const required = policy.required || {};
       logMsg(
         log,
-        `  [${label}] 需要验证：purpose=${policy.purpose || purpose} interactive=${required.interactive ?? '?'} pow=${required.pow ?? '?'} reason=${required.reason ?? '?'}`,
+        `[${label}] 需要验证（policy=${String(policy.id).slice(0, 8)}…）：purpose=${policy.purpose || purpose} interactive=${required.interactive ?? '?'} pow=${required.pow ?? '?'} reason=${required.reason ?? '?'}`,
       );
 
       // 交互式验证（滑块/点选）无法自动完成 —— 明确报错，不要静默重试 3 遍浪费几分钟
@@ -358,7 +365,7 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
 
       if (!policy.pow || !policy.pow.token) {
         lastDetail = `41700 未提供 PoW 挑战（pow=${required.pow ?? '?'}）`;
-        logMsg(log, `  [${label}] ${lastDetail}，重试`);
+        logMsg(log, `[${label}] ${lastDetail}，重试`);
         continue;
       }
 
@@ -368,10 +375,10 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
         const t0 = Date.now();
         counter = await solvePow(policy.pow, log);
         if (counter === null) throw new H1Error(`counterLimit(${policy.pow.counterLimit}) 内未找到答案`);
-        logMsg(log, `  [PoW] purpose=${policy.pow.purpose || purpose} → counter=${counter}（求解 ${((Date.now() - t0) / 1000).toFixed(1)}s）`);
+        logMsg(log, `[PoW] purpose=${policy.pow.purpose || purpose} → counter=${counter}（求解 ${((Date.now() - t0) / 1000).toFixed(1)}s）`);
       } catch (e) {
         lastDetail = `PoW 求解失败：${e.message}`;
-        logMsg(log, `  [${label}] ${lastDetail}，换新挑战重试`);
+        logMsg(log, `[${label}] ${lastDetail}，换新挑战重试`);
         continue;
       }
 
@@ -387,7 +394,7 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
         );
       } catch (e) {
         lastDetail = `提交许可异常：${e.message}`;
-        logMsg(log, `  [${label}] ${lastDetail}，重试`);
+        logMsg(log, `[${label}] ${lastDetail}，重试`);
         continue;
       }
 
@@ -395,15 +402,15 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
         if (isRateLimited(pr)) {
           const wait = cooldownMs(pr);
           lastDetail = `提交许可被限流，退避 ${(wait / 1000).toFixed(0)}s`;
-          logMsg(log, `  [${label}] ${lastDetail}`);
+          logMsg(log, `[${label}] ${lastDetail}`);
           await sleep(wait);
         } else {
           lastDetail = `提交许可失败 code=${pr.json?.code}（${pr.json?.msg || pr.raw}）`;
-          logMsg(log, `  [${label}] ${lastDetail}，换新挑战重试`);
+          logMsg(log, `[${label}] ${lastDetail}，换新挑战重试`);
         }
         continue;
       }
-      logMsg(log, `  [${label}] ✅ 许可已获得（ready=${pr.json?.data?.ready}）`);
+      logMsg(log, `[${label}] ✅ 许可已获得（permit=${String(pr.json?.data?.id || policy.id).slice(0, 8)}…，ready=${pr.json?.data?.ready}）`);
 
       // ---- ④ 带许可重发原请求 ----
       const permit = String(pr.json?.data?.id || policy.id);
@@ -417,14 +424,14 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
         );
       } catch (e) {
         lastDetail = `带许可重发异常：${e.message}`;
-        logMsg(log, `  [${label}] ${lastDetail}，重试`);
+        logMsg(log, `[${label}] ${lastDetail}，重试`);
         continue;
       }
 
       // 走完链路后判断「是否只是响应形状不符」——这类失败重试整条链路毫无意义
       // （每次都要重新解一次几十秒的 PoW），直接抛出暴露问题。
       if (isSuccess(r)) {
-        logMsg(log, `  [${label}] ✅ 带许可重发成功`);
+        logMsg(log, `[${label}] ✅ 带许可重发成功`);
         return { ok: true, response: r };
       }
       if (isShapeMismatch(r, isSuccess)) {
@@ -434,29 +441,29 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
       }
       if (isTerminalFailure(r)) {
         lastDetail = `终态错误 code=${r.json?.code}（${r.json?.msg || ''}），重试无意义`;
-        logMsg(log, `  [${label}] ❌ ${lastDetail}`);
+        logMsg(log, `[${label}] ❌ ${lastDetail}`);
         return { ok: false, response: r };
       }
       if (isRateLimited(r)) {
         const wait = cooldownMs(r);
         lastDetail = `限流 code=41702，退避 ${(wait / 1000).toFixed(0)}s`;
-        logMsg(log, `  [${label}] ${lastDetail}`);
+        logMsg(log, `[${label}] ${lastDetail}`);
         await sleep(wait);
         continue;
       }
       // 又回到 41700 → 下一轮循环重走整条链路
       lastDetail = `带许可重发仍被要求验证 code=${r.json?.code}（${r.json?.msg || ''}）`;
-      logMsg(log, `  [${label}] ${lastDetail}，重试`);
+      logMsg(log, `[${label}] ${lastDetail}，重试`);
       continue;
     }
 
     // 旧验证码失败码 / 其它未知错误：一并重试，不因站点换了个错误码就放弃
     if (isVerificationFailure(r)) {
       lastDetail = `验证失败 code=${r.json?.code}（${r.json?.msg || ''}）`;
-      logMsg(log, `  [${label}] ${lastDetail}，重试`);
+      logMsg(log, `[${label}] ${lastDetail}，重试`);
     } else {
       lastDetail = `未知错误 HTTP ${r.httpStatus} code=${r.json?.code} ${r.json?.msg || r.raw}`;
-      logMsg(log, `  [${label}] ${lastDetail}，重试`);
+      logMsg(log, `[${label}] ${lastDetail}，重试`);
     }
   }
 
@@ -479,7 +486,7 @@ export async function login(user, password, log) {
     throw new H1Error(`登录失败：HTTP ${r.response.httpStatus} ${r.response.json?.msg || r.response.raw}`);
   }
   isLoggedIn = true;
-  logMsg(log, '  [登录] 成功');
+  logMsg(log, `[登录] ✅ 成功（账号 ${maskUser(user)}）`);
 }
 
 // ---------- 目录 ----------
@@ -496,7 +503,7 @@ export async function listDir(netPath, log) {
 export async function createDir(netPath, log) {
   const found = await listDir(netPath, log);
   if (found.exists) return found;
-  logMsg(log, `  [目录] 创建 /${netPath}`);
+  logMsg(log, `[目录] 创建 /${netPath}`);
   const r = await genericAttempts(
     () => apiWithToken('PUT', '/directory', { path: '/' + netPath }),
     `建目录 ${netPath}`,
@@ -514,19 +521,19 @@ export async function createDir(netPath, log) {
 export async function deleteDir(netPath, log) {
   const found = await listDir(netPath, log);
   if (!found.exists) {
-    logMsg(log, `  [删除] 目录已不存在，跳过：/${netPath}`);
+    logMsg(log, `[删除] 目录已不存在，跳过：/${netPath}`);
     return false;
   }
   const dirId = found.parent;
   if (!dirId) throw new H1Error(`删除目录失败：未取得目录 id（/${netPath}）`);
-  logMsg(log, `  [删除] 删除目录 /${netPath}（id=${dirId}）`);
+  logMsg(log, `[删除] 删除目录 /${netPath}（id=${dirId}）`);
   const r = await genericAttempts(
     () => apiWithToken('DELETE', '/object', { items: [], dirs: [dirId], force: true }),
     `删除目录 ${netPath}`,
     log,
   );
   if (r.json?.code !== 0) throw new H1Error(`删除目录失败(HTTP ${r.httpStatus}): ${r.json?.msg || r.raw}`);
-  logMsg(log, `  [删除] ✅ 已删除 /${netPath}`);
+  logMsg(log, `[删除] ✅ 已删除 /${netPath}`);
 
   // 向上清理空父目录：逐级检查上级目录是否已无任何对象，空则一并删除（含 foldcraftlauncher_cn_auto 根），
   // 直到遇到非空目录或没有更上层为止；避免 keepLatest 清理后残留一串空目录
@@ -538,14 +545,14 @@ export async function deleteDir(netPath, log) {
     if ((parent.objects || []).length > 0) break; // 上级非空，停止清理
     const pid = parent.parent;
     if (!pid) break;
-    logMsg(log, `  [删除] 空父目录 /${parentPath} 一并删除（id=${pid}）`);
+    logMsg(log, `[删除] 空父目录 /${parentPath} 一并删除（id=${pid}）`);
     const pr = await genericAttempts(
       () => apiWithToken('DELETE', '/object', { items: [], dirs: [pid], force: true }),
       `删空父目录 ${parentPath}`,
       log,
     );
     if (pr.json?.code !== 0) {
-      logMsg(log, `  [删除] ⚠ 空父目录删除失败(HTTP ${pr.httpStatus}): ${pr.json?.msg || pr.raw}（继续尝试更上层）`);
+      logMsg(log, `[删除] ⚠ 空父目录删除失败(HTTP ${pr.httpStatus}): ${pr.json?.msg || pr.raw}（继续尝试更上层）`);
     }
   }
   return true;
@@ -581,7 +588,8 @@ export async function offlineDownload(urls, netPath, wantFiles, log) {
   const wantNames = wantFiles.map((w) => w.name);
   let lastErr = null;
   for (let attempt = 1; attempt <= RETRY.DOWNLOAD_ATTEMPTS; attempt += 1) {
-    logMsg(log, `  [离线下载] 第 ${attempt}/${RETRY.DOWNLOAD_ATTEMPTS} 次：准备处理 ${wantFiles.length} 个文件`);
+    const wantBytes = wantFiles.reduce((sum, w) => sum + (Number(w.size) || 0), 0);
+    logMsg(log, `[离线下载] 第 ${attempt}/${RETRY.DOWNLOAD_ATTEMPTS} 次｜目标目录 ${dst}｜${wantFiles.length} 个文件（共 ${formatBytes(wantBytes)}）`);
     try {
       await createDir(netPath, log);
 
@@ -598,13 +606,13 @@ export async function offlineDownload(urls, netPath, wantFiles, log) {
         }
       }
       if (existingOk.size > 0) {
-        logMsg(log, `  [离线下载] 目录已存在 ${existingOk.size} 个匹配文件，跳过提交：${[...existingOk].join(', ')}`);
+        logMsg(log, `[离线下载] 目录已存在 ${existingOk.size} 个匹配文件，跳过提交：${[...existingOk].join(', ')}`);
       }
 
       // 2) 已在下载中的任务 → 跳过重复提交（避免 xxx(1)）
       const downloadingNames = await collectDownloadingNames(dst, wantNames);
       if (downloadingNames.size > 0) {
-        logMsg(log, `  [离线下载] 发现 ${downloadingNames.size} 个文件已在下载中，跳过重复提交`);
+        logMsg(log, `[离线下载] 发现 ${downloadingNames.size} 个文件已在下载中，跳过重复提交`);
       }
 
       // 3) 待提交列表（url ↔ file 成对，避免下标错位）
@@ -625,7 +633,7 @@ export async function offlineDownload(urls, netPath, wantFiles, log) {
           const totalBatches = Math.ceil(pending.length / LIMIT.OFFLINE_BATCH);
           logMsg(
             log,
-            `  [离线下载] 提交第 ${batchNo}/${totalBatches} 批（${batch.length} 个）：${batch.map((b) => b.file.name).join(', ')}`,
+            `[离线下载] 提交第 ${batchNo}/${totalBatches} 批（${batch.length} 个）：${batch.map((b) => b.file.name).join(', ')}`,
           );
           const r = await genericAttempts(
             () =>
@@ -643,25 +651,25 @@ export async function offlineDownload(urls, netPath, wantFiles, log) {
           if (bad.length > 0) {
             logMsg(
               log,
-              `  [离线下载] 第 ${batchNo} 批提交返回非零码 ${bad.length} 个（${bad
+              `[离线下载] 第 ${batchNo} 批提交返回非零码 ${bad.length} 个（${bad
                 .map((b) => b.msg || '')
                 .filter(Boolean)
                 .join('; ')}），以目录文件列表为准继续等待`,
             );
           }
-          logMsg(log, `  [离线下载] 等待第 ${batchNo} 批文件就绪…`);
+          logMsg(log, `[离线下载] 等待第 ${batchNo} 批文件就绪…`);
           await pollForFiles(netPath, batch.map((b) => b.file), log);
-          logMsg(log, `  [离线下载] ✅ 第 ${batchNo} 批文件已就绪`);
+          logMsg(log, `[离线下载] ✅ 第 ${batchNo} 批文件已就绪`);
         }
       } else {
-        logMsg(log, `  [离线下载] 全部 ${wantFiles.length} 个文件已在目录或下载中，跳过提交，直接轮询`);
+        logMsg(log, `[离线下载] 全部 ${wantFiles.length} 个文件已在目录或下载中，跳过提交，直接轮询`);
       }
 
       // 5) 最终全量确认（含之前已在下载的 + 本次各批新下载的）
       return await pollForFiles(netPath, wantFiles, log);
     } catch (e) {
       lastErr = e;
-      logMsg(log, `  [离线下载] 第 ${attempt} 次失败：${e.message}`);
+      logMsg(log, `[离线下载] 第 ${attempt} 次失败：${e.message}`);
       if (attempt < RETRY.DOWNLOAD_ATTEMPTS) await sleep(3000); // 下次提交前稍等
     }
   }
@@ -673,7 +681,8 @@ export async function offlineDownload(urls, netPath, wantFiles, log) {
 // wantFiles: [{ name, size }]，返回 Map<文件名, {id,size}>
 async function pollForFiles(netPath, wantFiles, log) {
   const total = wantFiles.length;
-  const deadline = Date.now() + ENV.DOWNLOAD_TIMEOUT_MS;
+  const startedAt = Date.now();
+  const deadline = startedAt + ENV.DOWNLOAD_TIMEOUT_MS;
   let lastMatched = -1;
   while (Date.now() < deadline) {
     let dir;
@@ -702,7 +711,7 @@ async function pollForFiles(netPath, wantFiles, log) {
       if (matched.size !== lastMatched) {
         logMsg(
           log,
-          `  [离线下载] 轮询中：${matched.size}/${total} 个文件已就绪` +
+          `[离线下载] 轮询中：${matched.size}/${total} 个文件已就绪（已等待 ${((Date.now() - startedAt) / 1000).toFixed(0)}s）` +
             (mismatched.length ? `；size 不符：${mismatched.join(', ')}` : ''),
         );
         lastMatched = matched.size;
@@ -732,7 +741,7 @@ export async function getSources(fileIds, log) {
   if (!r.ok) {
     throw new H1Error(`取直链失败：HTTP ${r.response.httpStatus} ${r.response.json?.msg || r.response.raw}`);
   }
-  logMsg(log, `  [取直链] 成功（${fileIds.length} 个文件）`);
+  logMsg(log, `[取直链] 成功（${fileIds.length} 个文件）`);
   return r.response.json.data;
 }
 
