@@ -529,5 +529,15 @@
     "name": "1.2.0.8",
     "nextUrl": "/data/down/0/auto/2025/2/28/1.2.0.8.json",
     "tag": "1.2.0.8"
+  },
+  {
+    "name": "1.2.0.7",
+    "nextUrl": "/data/down/0/auto/2025/2/22/1.2.0.7.json",
+    "tag": "1.2.0.7"
+  },
+  {
+    "name": "1.2.0.6",
+    "nextUrl": "/data/down/0/auto/2025/2/16/1.2.0.6.json",
+    "tag": "1.2.0.6"
   }
 ]
