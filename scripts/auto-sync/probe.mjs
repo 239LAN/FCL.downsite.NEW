@@ -2,7 +2,8 @@
 // 运行：node scripts/auto-sync/probe.mjs
 // 输出：有候选 → 向 $GITHUB_OUTPUT 写 needs_sync=true；否则 false
 //
-// 本脚本不读 H1111_USER / H1111_PASSWORD，不触碰网盘、不写数据文件、不跑 git。
+// 本脚本不读任何凭据（H1111_SESSION / H1111_USER / H1111_PASSWORD），不触碰网盘、不写数据文件、不跑 git。
+// （会话巡检是**独立的一步** check-session.mjs，会读 H1111_SESSION 做只读验活。）
 //
 // 探测逻辑来自 plan.mjs（与 sync.mjs 共用同一份实现，避免两边口径漂移）。
 // 日志实现来自 logger.mjs —— 无时间戳前缀、无 ::group:: 折叠、树形缩进、末尾不重打。

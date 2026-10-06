@@ -79,13 +79,25 @@ GHA workflow
 ### 3.2 触发与凭据
 
 - 由工作流的 `schedule`（cron 按 UTC 编写）与 `workflow_dispatch` 手动触发；另有 `concurrency` 防重入。具体时间点见 `.github/workflows/auto-sync.yml`。
-- **登录凭据**以仓库 Secrets 注入，只在 sync job 中使用；probe job 完全不读凭据。
+- **登录凭据**以仓库 Secrets 注入（`H1111_SESSION`），只在需要时读取；probe job 的会话巡检会读它做只读检查。
+- **登录方式（2026-10-07 起改为会话 cookie）**：站点把**登录**改成交互式验证（人眼点选/输入字符），密码登录无法自动化。方案改为：
+  - 人工登录一次 → 取得 `cloudreve-session` → 存进 secret `H1111_SESSION` → 脚本 `loginWithSession()` 复用它
+  - 实测依据：该 cookie **60 天**有效、**不滑动续期**、**不绑定 UA/IP**；取直链 `required.interactive=0`，仍只要 PoW
+  - 只用 `cloudreve-session` 即可走完全链路；`cloudreve_observer`（1 天）由 `41700` 响应自动下发并被 cookieJar 吸收
+  - `H1111_USER` / `H1111_PASSWORD` **保留作回退**（站点若改回密码登录可直接复用，无需改代码）
+  - 协议细节见 [`huang1111-api-notes.md`](huang1111-api-notes.md) §0.8
+- **会话到期提醒**：`check-session.mjs` 在 probe job 里运行（只读、不登录），
+  离线推算到期时间 + 实际打一次 `GET /user/me` 验活；剩余 **30 / 10 / 1 天**、**已失效**、
+  或**未配置 `H1111_SESSION`** 时开 GitHub Issue（会被 GitHub 邮件推送给仓库所有者，故人在学校也能收到）。
+  去重键是标题里带的到期时间，故同一份会话只提醒一次；问题解决后自动关闭该 Issue。
+  该脚本**任何情况下都 exit 0** —— 否则 probe job 报红会导致 sync job 被跳过，连同步机会都没有。
 - **验证方式（2026-10-02 起为 captcha policy v2）**：站点已**下线图形验证码通路**（`captchaCode` 失效），验证统一走 PoW：
   - 所有请求带 `X-Cloudreve-Captcha-Protocol: 2`（缺失 → `41709`）
   - 请求返回 `41700` 时取其内嵌 policy → 解 PoW → `POST /site/captcha/policy` 换许可 → 带 `X-Cloudreve-Captcha-Permit` 重发
   - 整条链路按次重试（`RETRY.VERIFY_ATTEMPTS`），`41702` 限流按 `retry_after` 退避
   - PoW 求解为纯 WebCrypto（与前端 WebCrypto 回退路径同算法），**单线程**，带进度日志与硬超时
-  - ⚠️ 必须携带**全部 cookie**（`cloudreve-session` + `cloudreve_observer` + `cloudreve_send`），否则许可提交恒 `41701`
+  - ⚠️ 验证链路本身需要全量 cookie，但脚本用 cookieJar 自动吸收服务端下发的 cookie，
+    故**只需提供 `cloudreve-session`**（详见 [`huang1111-api-notes.md`](huang1111-api-notes.md) §0.8 末的更正说明）
   - 协议细节与被否决的旧方案见 [`huang1111-api-notes.md`](huang1111-api-notes.md) §0.3 / §0.4b / §0.7
 
 ### 3.3 软件映射表
@@ -174,9 +186,12 @@ GHA workflow
 | 风险 | 等级 | 缓解 |
 |---|---|---|
 | 网盘 API 是逆向产物，可能变更 | 中 | 所有调用集中在 `h1api.mjs` 一处，变更时只改封装；仓库记录 API 验证快照（见 `huang1111-api-notes.md`） |
-| 登录凭据存于 Actions secret | 中 | secret 权限最小化；账号密码可随时在网盘端改密作废 |
+| 站点对登录强制交互式验证，密码登录无法自动化 | **已发生** | 改用会话 cookie（`H1111_SESSION`，60 天）；见 `huang1111-api-notes.md` §0.8 |
+| 会话 cookie 到期（60 天，不滑动续期）而人不在电脑前 | 中 | probe job 每天巡检，剩余 30/10/1 天或失效时开 Issue（GitHub 邮件推送）；`H1111_SESSION_TTL` 可在站点改时长时覆盖常量 |
+| 凭据存于 Actions secret | 中 | secret 权限最小化；会话 cookie 可随时在网盘端「退出登录」作废 |
 | PoW 求解耗时（单线程逐 counter 试算，数十秒级） | 低 | 带 5s 一条的进度日志 + 硬超时（`RETRY.POW_SOLVE_TIMEOUT_MS`）；挑战有效期约 1200s 余量充足；失败换新挑战重走 |
-| 站点再次变更验证机制（如强制交互式验证、换协议版本） | 中 | 验证逻辑集中在 `h1api.mjs` 的 `verifyThenSend` + `login`/`getSources` 两处；协议常量（`CAPTCHA_PROTOCOL` / `POW_PROTOCOL` / `POW_DOMAIN_STRING`）已显式命名并带注释，变更时改这一处；人工复核方法见 `huang1111-api-notes.md` §0.7 |
+| 站点对**取直链**也强制交互式验证 | 中 | 目前 `direct_link` 的 `required.interactive=0`（实测）。若范围扩大，自动同步将无法维持，只能人工维护 —— 巡检会在日志中暴露该错误 |
+| 站点再次变更验证机制（换协议版本等） | 中 | 验证逻辑集中在 `h1api.mjs` 的 `verifyThenSend` + `loginWithSession`/`login`/`getSources`；协议常量（`CAPTCHA_PROTOCOL` / `POW_PROTOCOL` / `POW_DOMAIN_STRING`）已显式命名并带注释，变更时改这一处；人工复核方法见 `huang1111-api-notes.md` §0.7 / §0.8 |
 | 离线下载依赖网盘服务器访问 GitHub 的连通性 | 中 | 已验证可用；失败重试；必要时可配置代理前缀 |
 | GHA API 限流 | 低 | 调用量极小（每软件 1 次 releases + 少量网盘接口调用） |
 | 站端 JSON 结构被脚本改坏 | 低 | 生成后本地校验（JSON 可解析、URL 前缀、index 与版本文件一致），校验不过不提交 |

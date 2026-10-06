@@ -9,16 +9,37 @@
 //   POST /file/source             → 批量取直链
 //   POST /site/captcha/policy     → 提交 PoW，换取「验证通过」许可
 //
-// ============================ 验证协议（2026-10-02 逆向 + 实测） ============================
+// ============================ 验证协议（2026-10-07 复核） ============================
 //
-// 站点已升级为 **captcha policy v2**，旧的两条验证通路（图形验证码 captchaCode / 裸 PoW powPayload）
-// **全部作废**。旧脚本死在一个前置条件上：**每个请求都必须声明协议版本**。
+// ⚠⚠ **登录**已改成交互式验证，无法自动化。这是 2026-10-07 的站点变更：
+//
+//   required: { interactive: 1, pow: "", level: 0, reason: "normal" }
+//   interactive: { version: 2, kind: "click"|"text"|"slide", count: 2,
+//                  scene: "data:image/png;base64,…"(320x240), prompt: "…"(144x64) }
+//
+//   · 登录时 pow 字段为**空**、pow_done 直接为 true → 只剩交互式这一道坎
+//   · kind 在 click（图形点选）/ text（输入字符）/ slide（滑块拖动）之间随机切换
+//   · 题图是**内嵌 base64**，不额外下载；答案不下发
+//   · 提交格式 { points:[{x,y}…], question_id }（click）/ { text, question_id }（text），
+//     坐标为**归一化** 0~1；仍走 POST /site/captcha/policy
+//   · 答错 → 41701；尝试次数耗尽 → 41708（有锁号风险，**不要**拿真账号试错）
+//
+//   ⇒ 因此登录改用「人工登录一次 + 复用会话 cookie」：loginWithSession()。
+//     依据（本地实测）：会话 60 天有效、不绑定 UA、不绑定 IP，
+//     且取直链只带 session 即可（cloudreve_observer 由 41700 自动补发）。
+//
+// ✅ **取直链**不受影响：purpose=direct_link 的 required.interactive 仍为 0，只要 PoW。
+//    全链路实测跑通：41700 → PoW(counter) → POST /site/captcha/policy → permit → 拿到直链。
+//
+// 站点自 2026-10-02 起为 **captcha policy v2**，旧的两条验证通路（图形验证码 captchaCode /
+// 裸 PoW powPayload）**全部作废**。旧脚本死在一个前置条件上：**每个请求都必须声明协议版本**。
 //
 //   ⚠ 不带 `X-Cloudreve-Captcha-Protocol: 2` → 一律 HTTP 200 + code=41709
 //       "Please update this page to use the new verification. / 请更新页面后使用新版验证。"
 //       （旧脚本正是这么失败的；带 Protocol: 1 同样 41709）
 //
-// 新流程是「挑战 → 许可」两段式（对应前端 webpack module 197 的 `ensure()` + axios 拦截器）：
+// 取直链/其他需验证请求仍是「挑战 → 许可」两段式（对应前端 webpack module 197 的
+// `ensure()` + axios 拦截器）：
 //
 //   ① 正常发请求（带 X-Cloudreve-Captcha-Protocol: 2）
 //   ② 若该请求需要验证 → code=41700，且 **响应 data 里直接内嵌 policy 对象**：
@@ -64,6 +85,7 @@
 import { webcrypto } from 'node:crypto';
 
 import { ENV, RETRY, TIMING, LIMIT } from './config.mjs';
+import { maskSession } from './session.mjs';
 
 const BASE = ENV.HOST + '/api/v3';
 const ORIGIN = ENV.HOST;
@@ -355,10 +377,21 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
         `需要验证：purpose=${policy.purpose || purpose} interactive=${required.interactive ?? '?'} pow=${required.pow ?? '?'} reason=${required.reason ?? '?'}`,
       );
 
-      // 交互式验证（滑块/点选）无法自动完成 —— 明确报错，不要静默重试 3 遍浪费几分钟
+      // 交互式验证（图形点选/输入字符/滑块）无法自动完成。
+      // ⚠ 2026-10-07 实测：**登录** purpose 会下发 interactive，kind 在
+      //   {click 图形点选, text 输入字符, slide 滑块} 三者间随机切换；
+      //   而**取直链** purpose=direct_link 的 required.interactive = 0，不受影响。
+      //   所以走到这里基本只会是「登录」—— 而登录本就不该再走自动化了（见 loginWithSession）。
       if (Number(required.interactive) > 0 && !policy.interactive_done) {
+        const kind = policy.interactive?.kind;
+        const kindText = kind === 'click' ? '图形点选'
+          : kind === 'text' ? '输入字符'
+            : kind === 'slide' ? '滑块拖动'
+              : '交互式人机验证';
         throw new H1Error(
-          `${label}失败：站点要求交互式验证（interactive=${required.interactive}），无法自动完成，需人工处理`,
+          `${label}失败：站点要求交互式验证（${kindText}${kind ? `，kind=${kind}` : ''}，`
+          + `interactive=${required.interactive}），需人眼操作，无法自动完成。`
+          + '登录请改用会话 cookie（环境变量 H1111_SESSION），取法见 scripts/auto-sync/README.md。',
         );
       }
 
@@ -471,7 +504,65 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
   );
 }
 
-// ---------- 登录（41700 → PoW → policy → permit 重试）----------
+// ---------- 登录 ----------
+// ⚠ 2026-10-07 起站点把**登录**改成交互式验证（policy.required.interactive > 0，
+//   题目 kind ∈ {click,text,slide}，要在图形里点选/输入/拖滑块），密码登录**已无法自动化**。
+//   故正常路径改为 loginWithSession()（复用人工登录得到的会话 cookie，见 session.mjs）；
+//   下面的 login() 仅作**回退**保留，供站点将来改回密码登录时使用。
+
+/** 会话 cookie 名（Cloudreve 固定） */
+const SESSION_COOKIE = 'cloudreve-session';
+
+/**
+ * 用**已有的会话 cookie** 建立登录态（推荐路径）。
+ *
+ * 只做只读校验：把 cookie 放进请求头打一次 GET /user/me，
+ * 确认服务端认这份会话，然后把它存入 cookieJar 供后续请求复用。
+ *
+ * ⚠ 实测（2026-10-07）：
+ *   · 只需 cloudreve-session 这一个 cookie —— 取直链的 PoW 链路能全程跑通
+ *   · cloudreve_observer（仅 1 天寿命）由 41700 响应**自动补发**，无需手工保存
+ *   · 会话不绑定 UA、不绑定 IP，故可在 GHA 机房上使用
+ *   · 会话**不滑动续期**：签发后固定 60 天到期
+ *
+ * @returns {Promise<{id:string, name:string}>} 用户信息
+ */
+export async function loginWithSession(sessionValue, log) {
+  isLoggedIn = false;
+  const value = String(sessionValue || '').trim();
+  if (!value) throw new H1Error('未提供会话 cookie（H1111_SESSION 为空）');
+
+  // 覆盖式写入：会话值就是全部所需，不保留任何陈旧 cookie
+  cookieJar.clear();
+  cookieJar.set(SESSION_COOKIE, value);
+
+  // 不打印 cookie 明文，只给首尾便于指认
+  say(log, `使用会话 cookie 认证（${maskSession(value)}）`);
+
+  const r = await genericAttempts(() => api('GET', '/user/me'), '校验会话', log);
+  if (r.json?.code === 401) {
+    throw new H1Error(
+      '会话 cookie 已失效（401 Login required）—— 需要重新人工登录并更新 H1111_SESSION secret。'
+      + ' 取新值的方法见 scripts/auto-sync/README.md「会话 cookie」一节。',
+    );
+  }
+  if (r.json?.code !== 0) {
+    throw new H1Error(`校验会话失败：HTTP ${r.httpStatus} code=${r.json?.code} ${r.json?.msg || r.raw}`);
+  }
+
+  isLoggedIn = true;
+  const u = r.json.data || {};
+  const who = u.nickname || u.user_name || u.id || '(未知用户)';
+  say(log, `✅ 会话有效：${who}${u.group?.name ? `（${u.group.name}）` : ''}`);
+  return { id: u.id, name: who };
+}
+
+/**
+ * 账号密码登录（**回退路径，当前不可用**）。
+ *
+ * 站点把登录改成交互式验证后，本函数必然抛错 —— 但错误信息会明确指向 H1111_SESSION，
+ * 而不是让人对着 41700 猜。保留它是为了站点将来改回密码登录时能立刻恢复。
+ */
 export async function login(user, password, log) {
   isLoggedIn = false;
   const r = await verifyThenSend({

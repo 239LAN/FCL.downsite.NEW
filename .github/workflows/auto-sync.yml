@@ -6,8 +6,12 @@
 # 说明：
 #   - 先 probe 后 sync：probe job 只跑 checkout + node 24 + 预探测（不登录、不动网盘），
 #     全部软件均已是最新时，sync job 完全不调度（容器都不拉起）
-#   - 站点自 2026-10-02 起改为 captcha policy v2，图形验证码通路已被后端下线，
-#     验证全靠 PoW（算法未变），故**不再需要 Python / pip / OCR 依赖**
+#   - 站点自 2026-10-07 起把**登录**改成交互式验证（图形点选/输入字符，人眼专用），
+#     密码登录**已无法自动化** → 改用「人工登录一次 + 复用会话 cookie」（H1111_SESSION）。
+#     该 cookie 实测 60 天有效、不绑定 UA/IP、不滑动续期；
+#     取直链 purpose=direct_link 不受影响（required.interactive=0，仍只需 PoW）。
+#     会话到期前由 check-session.mjs 开 Issue 提醒（GitHub 会发邮件）。
+#     H1111_USER / H1111_PASSWORD 仅作**回退**保留（站点若改回密码登录可直接复用）。
 #   - 提交消息格式 `[GHA] 新增：内容：数据源：资源id-{id}：{版本列表&分隔}呜~` 由脚本生成，
 #     正文为该软件的过程日志（由 logger.mjs 的作用域自动收集，见 scripts/auto-sync/README.md）
 #
@@ -16,8 +20,9 @@
 #   - 每个 job 的概览在运行页顶部「Summary」的详细表格里（GITHUB_STEP_SUMMARY）
 #
 # 需要配置仓库 Secrets：
-#   H1111_USER      — huang1111 登录账号
-#   H1111_PASSWORD  — huang1111 登录密码
+#   H1111_SESSION   — huang1111 会话 cookie 值（**必需**；取法见 scripts/auto-sync/README.md）
+#   H1111_USER      — huang1111 登录账号（回退用，可选）
+#   H1111_PASSWORD  — huang1111 登录密码（回退用，可选）
 #   （OCR_PKG_NAME / OCR_CLS_NAME 已废弃，可删除）
 
 name: 线路1自动同步
@@ -30,6 +35,8 @@ on:
 
 permissions:
   contents: write
+  # 会话临期/失效时开提醒 Issue（check-session.mjs）——不涉及仓库内容，故仅需 issues
+  issues: write
 
 concurrency:
   group: auto-sync
@@ -52,6 +59,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
+
+      # 会话巡检：离线推算到期时间（cookie 内嵌签发时间 + 60 天常量），
+      # 并实际打一次 GET /user/me 验活。临期 30/10/1 天或已失效 → 开 Issue 提醒。
+      # 放在 probe 里是因为它很便宜（两次请求），且能保证「即使没有新版本也每天检查一次」。
+      - name: 会话 cookie 巡检
+        run: node scripts/auto-sync/check-session.mjs
+        env:
+          H1111_SESSION: ${{ secrets.H1111_SESSION }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 预探测候选
         id: probe
@@ -80,6 +96,9 @@ jobs:
         id: sync
         run: node scripts/auto-sync/sync.mjs
         env:
+          # 会话 cookie 是当前唯一可用的登录方式（登录已被交互式验证挡住）
+          H1111_SESSION: ${{ secrets.H1111_SESSION }}
+          # 回退路径：站点若改回密码登录，可直接复用这两个（无需改工作流）
           H1111_USER: ${{ secrets.H1111_USER }}
           H1111_PASSWORD: ${{ secrets.H1111_PASSWORD }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

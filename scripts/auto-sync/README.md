@@ -9,12 +9,15 @@
 
 - `sync.mjs`：主流程（检测 → 离线下载 → 直链 → 写 JSON → 分软件提交 → push）
 - `probe.mjs`：预探测（只读，无候选时跳过 sync job）
+- `check-session.mjs`：会话 cookie 巡检（只读，临期/失效时开 Issue 提醒）
 - `plan.mjs`：候选版本探测（**probe 与 sync 共用同一份实现**，避免两边口径漂移）
 - `logger.mjs`：**唯一日志实现**（树形缩进 / 提交正文收集 / GHA 注解 / 汇总页）
 - `lib.mjs`：纯函数与共享常量（**不持有任何日志状态**）
-- `h1api.mjs`：huang1111 API 封装（含新版验证链路与 PoW 求解）
+- `session.mjs`：会话 cookie 解析与生命周期判定（签发/到期时间、临期档位；供上面两者共用）
+- `h1api.mjs`：huang1111 API 封装（含会话登录、验证链路与 PoW 求解）
 - `config.mjs`：环境变量与常量（**改配置看这里**）
 - `softwares.json`：软件映射表（**有哪些软件看这里**）
+- `tools/refresh-session.mjs`：**手动工具**（非 GHA 运行）——从浏览器提取会话 cookie，供更新 secret
 
 > ⚠️ 2026-10 日志全量重构：旧的可变全局 `ctx`（`ctx.log` / `ctx.group` / `ctx.sum` …）**已整体删除**。
 > 需要打日志的函数改为**接收作用域或回调**，再也没有「猴补丁替换全局 log」这种写法。
@@ -29,14 +32,52 @@
 
 仓库 **Settings → Secrets and variables → Actions** 添加：
 
-| Secret | 说明 |
-|---|---|
-| `H1111_USER` | huang1111 登录账号 |
-| `H1111_PASSWORD` | huang1111 登录密码 |
+| Secret | 必需性 | 说明 |
+|---|---|---|
+| `H1111_SESSION` | **必需** | huang1111 **会话 cookie 值**（不是账号密码）。取法见下节 |
+| `H1111_USER` | 可选 | 登录账号（**回退**用，见下） |
+| `H1111_PASSWORD` | 可选 | 登录密码（**回退**用） |
 
 > `OCR_PKG_NAME` / `OCR_CLS_NAME` 已废弃（站点图形验证码通路下线），可从仓库删除。
 
 凭据只存 GitHub，脚本只从环境变量读取，仓库内永不落盘。
+
+### 会话 cookie：为什么用它、怎么取
+
+**为什么不能用账号密码了**：站点自 **2026-10-07** 起把**登录**改成了**交互式验证** ——
+要在图形里点选字符（`kind=click`）、输入字符（`kind=text`）或拖滑块（`kind=slide`），人眼专用，脚本无法完成。
+（实测登录时 `required.interactive=1` 且**不下发 PoW**，只有这一道坎。）
+
+**替代办法**：在浏览器里**人工登录一次**，把拿到的会话 cookie 存进 `H1111_SESSION`，脚本复用它。
+
+实测依据（2026-10-07 全部本地验证）：
+
+| 性质 | 实测结果 |
+|---|---|
+| 有效期 | `Max-Age=5184000` = **60 天**，且**不滑动续期**（绝对过期） |
+| 是否绑定 UA | ❌ 不绑定（无 UA / curl / Linux Chrome 均可认证） |
+| 是否绑定 IP | ❌ 不绑定（换代理出口后依然有效） |
+| 取直链要不要交互式 | ❌ 不要（`direct_link` 的 `required.interactive=0`，仍只需 PoW） |
+| 需要哪些 cookie | **只要 `cloudreve-session`**；`cloudreve_observer`（仅 1 天）由 41700 响应自动补发 |
+
+**取新值的步骤**（回家时做一次）：
+
+```powershell
+# 1. 在 Firefox 里登录 https://pan.huang1111.cn （完成点选/输入/滑块验证）
+# 2. 提取会话并复制到剪贴板
+node scripts/auto-sync/tools/refresh-session.mjs
+# 3. 粘贴到 GitHub → Settings → Secrets → H1111_SESSION
+```
+
+> 60 天到期后同步会失败。`check-session.mjs` 会在**剩余 30 / 10 / 1 天**、**已失效**、
+> 以及**压根没配 `H1111_SESSION`** 时自动开一个 GitHub Issue 提醒（GitHub 会发邮件），
+> 所以人在学校也能收到；问题解决后该 Issue 会被自动关闭。
+
+### 回退：账号密码登录
+
+`H1111_USER` / `H1111_PASSWORD` 仍保留：当 `H1111_SESSION` 为空时会走密码登录。
+但站点已启用交互式验证，**这条路目前必然失败**（错误信息会提示改用会话 cookie）。
+保留它是为了站点将来改回密码登录时无需改代码。
 
 ## 本地手动运行（调试用）
 
@@ -44,9 +85,12 @@
 # 只跑预探测（不读凭据、不动网盘）
 node scripts/auto-sync/probe.mjs
 
-# 完整同步（需要凭据）
-$env:H1111_USER = '你的账号'
-$env:H1111_PASSWORD = '你的密码'
+# 会话巡检（不登录、只读；本地跑不会开 Issue，仅打印结论）
+$env:H1111_SESSION = '你的会话 cookie 值'
+node scripts/auto-sync/check-session.mjs
+
+# 完整同步（需要会话 cookie）
+$env:H1111_SESSION = '你的会话 cookie 值'
 node scripts/auto-sync/sync.mjs
 ```
 
@@ -162,12 +206,15 @@ POST /site/captcha/policy { id, pow_payload }   ← 字段名是 pow_payload（�
 - 单次 PoW 求解硬超时 `RETRY.POW_SOLVE_TIMEOUT_MS`（150s；求解为单线程逐 counter 试算，`counterLimit` 上限 5000）
 - `41702` 限流按 `data.retry_after` 退避重试
 - `40020`/`40001`/`401` 为终态（凭据错误、未登录等），立即失败不做无谓重试
-- 站点要求**交互式验证**（滑块等）时直接报错，不静默重试
+- 站点要求**交互式验证**（图形点选/输入字符）时直接报错并提示改用会话 cookie，不静默重试
 
-> ⚠️ 两个必须遵守的前置条件（详见 [`docs/huang1111-api-notes.md`](../../docs/huang1111-api-notes.md) §0.3）：
+> ⚠️ 前置条件（详见 [`docs/huang1111-api-notes.md`](../../docs/huang1111-api-notes.md) §0.3）：
 > 1. 所有请求都要带 `X-Cloudreve-Captcha-Protocol: 2`，否则一律 `41709`「请更新页面后使用新版验证」
-> 2. 必须携带**全部 cookie**（`cloudreve-session` + `cloudreve_observer` + `cloudreve_send`）。
->    只带 `cloudreve-session` 时 `POST /site/captcha/policy` 恒返回 `41701` —— 旧文档「observer 非必需」已失效。
+> 2. 验证链路需要**全量 cookie**。但**只需自己提供 `cloudreve-session`** ——
+>    `cloudreve_observer` / `cloudreve_send` 由 41700 响应**自动下发**并被 cookieJar 吸收，
+>    无需手工保存（实测 2026-10-07：只带 session 即可走完 PoW → policy → permit 拿到直链）。
+>    > 旧文档写的「只带 session 恒返回 41701」描述的是**手工构造请求、未接收 41700 下发的 cookie**
+>    > 那种情形；本脚本用 cookieJar 自动吸收，不受影响。
 
 任一步耗尽后：该版本跳过（不写 JSON），其余版本继续；存在失败项时进程以非 0 退出，GHA 显示红色即告警，下次运行自动补。
 
@@ -268,15 +315,22 @@ commitSoftware(id, versionList, swScope.collectBody(), swScope);
 | 某版本一直失败 | 本地手动跑一次看完整日志；常见：GitHub 资产命名变化（改 `softwares.json`）、PoW 链路重试耗尽（偶发，重跑） |
 | index.json 顺序乱了 | 置顶条目必须是 `"pinned": true`；手写 `{name, children}` 条目的版本号要能从 `name` 解析（如 `v1.0.2`）。其余版本条目按版本降序自动排列 |
 | 日志报 `41709 请更新页面后使用新版验证` | 请求缺 `X-Cloudreve-Captcha-Protocol: 2` 头，或站点又升了协议版本 —— 查 `h1api.mjs` 的 `CAPTCHA_PROTOCOL` |
-| 日志报 `41701 验证失败，请重试` | 提交 `POST /site/captcha/policy` 时 cookie 不全。必须带 `cloudreve-session` + `cloudreve_observer` + `cloudreve_send` 全部 cookie |
-| 日志报「站点要求交互式验证」 | 站点给该 purpose 开了滑块/点选（`required.interactive > 0`），脚本无法自动完成，需人工处理 |
+| 日志报 `41701 验证失败，请重试` | 走到验证链路时 cookie 不完整。脚本用 cookieJar 自动吸收 41700 下发的 `cloudreve_observer`，正常不该出现；若持续出现，检查是否手工改过请求头 |
+| 登录报 `401 Login required` /「会话 cookie 已失效」 | `H1111_SESSION` 过期（60 天）。按上面「会话 cookie」一节重新登录并更新 secret |
+| 登录报「缺少凭据」 | 没配 `H1111_SESSION`（且没配账号密码）。会话 cookie 是当前唯一可用路径 |
+| 收到「会话 cookie 即将过期」Issue | 正常提醒（30/10/1 天档）。回家按「会话 cookie」一节更新 secret 后，该 Issue 会自动关闭 |
+| 日志报「站点要求交互式验证」 | 站点给该 purpose 开了点选/输入（`required.interactive > 0`）。**登录**必然如此 → 改用 `H1111_SESSION`；若**取直链**也变成这样，说明站点扩大了交互式范围，届时只能人工维护 |
 | 日志报 `41702` 限流 | 已按 `retry_after` 自动退避；若频繁出现说明触发频率限制，需拉长定时任务间隔 |
 | 日志出现「求解中… N/5000」 | 正常。PoW 求解为单线程逐 counter 试算，耗时数十秒，进度日志每 5s 一条，不是卡死 |
 
-> 怀疑站点又改了验证机制时，先跑项目外测试目录的 `_probe-v2-protocol.mjs` 确认（路径与用法见 [`docs/auto-sync-design.md`](../../docs/auto-sync-design.md) 开头）。
+> 怀疑站点又改了验证机制时，先跑项目外测试目录的探针确认
+> （路径与用法见 [`docs/auto-sync-design.md`](../../docs/auto-sync-design.md) 开头；
+> 交互式验证专项探针为 `_probe-v3-*.mjs` / `_probe-v3-*.py`）。
 
 ## 已知边界
 
 - 软件映射见 [`softwares.json`](softwares.json)；其余软件待后续扩展映射表
+- **登录无法自动化**：站点 2026-10-07 起对登录强制交互式验证（人眼点选/输入），
+  故依赖 `H1111_SESSION` 的人工续期（60 天一次）；过期前由 Issue 提醒
 - 单次运行中途若会话过期（401）不做自动重登（下次运行重新登录）；其余均在约定重试策略内自动恢复
 - 自动版本条目带 `size` 字段（前端 `formatBytes` 显示），手动旧条目无 `size` 不影响

@@ -4,6 +4,12 @@
 export const ENV = {
   // 网盘 API（默认线上源，测试可覆盖）
   HOST: (process.env.H1111_HOST || 'https://pan.huang1111.cn').replace(/\/+$/, ''),
+  // ---- 凭据（两种，优先用会话）----
+  // ⚠ 2026-10-07 起站点把**登录**改成交互式验证（图形点选/输入字符，人眼专用），
+  //    密码登录无法自动化 → H1111_USER/PASSWORD 这条路**必然失败**，仅作站点改回时的回退。
+  //    现在走 H1111_SESSION：人工登录一次拿到的 cloudreve-session cookie 值（实测 60 天有效）。
+  //    如何取值与更新，见 scripts/auto-sync/README.md「会话 cookie」一节。
+  SESSION: process.env.H1111_SESSION || '',
   USER: process.env.H1111_USER || '',
   PASSWORD: process.env.H1111_PASSWORD || '',
   // GitHub 相关：
@@ -21,6 +27,10 @@ export const ENV = {
 };
 
 // 重试策略
+// 说明（2026-10-07 更新：登录已改交互式验证，见 ENV.SESSION 处的说明）：
+//   · **登录**不再走本文件的重试链路 —— 密码登录被交互式验证挡住，直接改用会话 cookie。
+//   · **取直链**仍走下面这条链路（实测 direct_link 的 required.interactive = 0，只要 PoW）。
+//
 // 说明（2026-10-02 起，站点已改为 captcha policy v2，旧的「图形验证码/裸 PoW」两条路全部作废）：
 //   验证流程变为一次「挑战 → 许可」链路：正常请求 → 41700 拿 policy → 解 PoW
 //   → POST /site/captcha/policy 换许可 → 带 X-Cloudreve-Captcha-Permit 重发原请求。

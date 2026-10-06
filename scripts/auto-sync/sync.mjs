@@ -1,5 +1,9 @@
 // sync.mjs — 线路1 自动同步主流程（GitHub Releases → huang1111 离线下载 → 直链 → 写 JSON → 分软件提交 → push）
-// 运行：node scripts/auto-sync/sync.mjs   （需要环境变量 H1111_USER / H1111_PASSWORD）
+// 运行：node scripts/auto-sync/sync.mjs
+//   ⚠ 需要环境变量 **H1111_SESSION**（会话 cookie 值）—— 站点自 2026-10-07 起对**登录**
+//     启用交互式验证（人眼点选/输入/拖滑块），账号密码登录**已无法自动化**。
+//     故 H1111_USER / H1111_PASSWORD 降级为回退（仅在未提供 H1111_SESSION 时尝试，预计失败）。
+//     会话取法与有效期说明见 scripts/auto-sync/README.md「会话 cookie」一节。
 //
 // 检测逻辑（用户确认，与 probe.mjs 共用 plan.mjs 的同一份实现）：
 //   1. 取数据源内最新版本（data/down/{id}/index.json 中可解析的版本条目）
@@ -11,10 +15,11 @@
 //   不依赖 /aria2/finished 的 status，也不依赖 POST /aria2/url 返回的 code。
 //
 // 重试策略（用户确认，见 config.mjs RETRY）：
-//   验证类失败（登录/取直链）→ 完整验证链路（41700 → PoW → policy → permit）最多 3 次
-//   离线下载失败              → 提交+轮询最多 3 次
-//   其他任何失败（网络/HTTP） → 最多 2 次尝试
-//   站点验证协议细节见 h1api.mjs 文件头与 docs/huang1111-api-notes.md §0.3 / §0.7
+//   登录                        → 不复用重试链路：直接用会话 cookie 认证（见 loginWithSession）
+//   验证类失败（取直链）        → 完整验证链路（41700 → PoW → policy → permit）最多 3 次
+//   离线下载失败                → 提交+轮询最多 3 次
+//   其他任何失败（网络/HTTP）   → 最多 2 次尝试
+//   站点验证协议细节见 h1api.mjs 文件头与 docs/huang1111-api-notes.md §0.3 / §0.7 / §0.8
 //
 // 日志（2026-10 全量重构，见 logger.mjs 文件头）：
 //   · 缩进由作用域树自动推导，调用方不手写空格
@@ -31,6 +36,8 @@ import { pathToFileURL } from 'node:url';
 
 import { ENV } from './config.mjs';
 import * as h1 from './h1api.mjs';
+import { H1Error } from './h1api.mjs';
+import { sessionInfo, maskSession, fmtUnixCST, fmtRemaining } from './session.mjs';
 import {
   ROOT, SOFTWARES,
   compareVersionsDescending, datePathFromRelease,
@@ -390,18 +397,44 @@ async function main() {
   }
 
   // ================= 阶段 2：登录 huang1111 =================
-  if (!ENV.USER || !ENV.PASSWORD) {
-    const msg = '缺少凭据：请设置环境变量 H1111_USER / H1111_PASSWORD';
-    log.fail(msg);
-    log.annotate('error', msg);
-    process.exit(2);
-  }
+  // 优先用会话 cookie（人工登录一次取得，实测 60 天有效、不绑定 UA/IP）；
+  // 站点自 2026-10-07 起把登录改成交互式验证，密码登录已无法自动化，仅作回退。
   const phase2 = log.child(`阶段 2：同步 ${plans.length} 个软件`);
   const loginScope = phase2.child('登录 huang1111', { symbol: '▸', commit: false });
   const loginT0 = Date.now();
-  loginScope.line(`站点：${ENV.HOST}｜账号：${ENV.USER.slice(0, 2)}***${ENV.USER.slice(-1)}`);
+  loginScope.line(`站点：${ENV.HOST}`);
+
+  const sess = sessionInfo(ENV.SESSION);
+  if (sess.present) {
+    // 每次运行都汇报会话寿命 —— 这样在 GHA 日志里能一眼看到还剩多久，
+    // 不必等失效了才发现（临期提醒另由 check-session.mjs 开 Issue）。
+    loginScope.line(
+      `会话 cookie：${maskSession(ENV.SESSION)}`
+      + `｜签发 ${fmtUnixCST(sess.issuedAt)}｜到期 ${fmtUnixCST(sess.expiresAt)}`
+      + `｜剩余 ${fmtRemaining(sess.secondsLeft)}`,
+    );
+    if (!sess.parseable) loginScope.warn(`⚠ 无法解析签发时间：${sess.reason}（仍会尝试直接使用）`);
+    else if (!sess.valid) loginScope.warn(`⚠ ${sess.reason}`);
+    else if (sess.band === 1) loginScope.warn('⚠ 会话将在 1 天内过期，请尽快重新登录并更新 H1111_SESSION');
+    else if (sess.band) loginScope.warn(`⚠ 会话将在 ${sess.band} 天内过期，建议回家时顺手更新 H1111_SESSION`);
+  } else {
+    loginScope.line(`未提供会话 cookie（H1111_SESSION 为空）｜账号：${ENV.USER ? `${ENV.USER.slice(0, 2)}***${ENV.USER.slice(-1)}` : '（未设置）'}`);
+  }
+
   try {
-    await h1.login(ENV.USER, ENV.PASSWORD, loginScope);
+    if (sess.present) {
+      await h1.loginWithSession(ENV.SESSION, loginScope);
+    } else {
+      // 回退路径：站点把登录改成交互式验证后这条路必然失败，错误信息会说明原因与替代做法
+      if (!ENV.USER || !ENV.PASSWORD) {
+        throw new H1Error(
+          '缺少凭据：请设置 H1111_SESSION（会话 cookie，推荐），或 H1111_USER / H1111_PASSWORD（回退）。'
+          + ' 会话取法见 scripts/auto-sync/README.md',
+        );
+      }
+      loginScope.warn('⚠ 未提供 H1111_SESSION，回退到账号密码登录；站点已启用交互式验证，此路径预计会失败');
+      await h1.login(ENV.USER, ENV.PASSWORD, loginScope);
+    }
     loginScope.close(`✅ 登录成功｜用时 ${fmtDur(Date.now() - loginT0)}`, { body: false });
   } catch (e) {
     loginScope.close(`❌ 登录失败：${errText(e)}｜用时 ${fmtDur(Date.now() - loginT0)}`, { kind: 'fail', body: false });
