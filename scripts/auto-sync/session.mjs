@@ -14,7 +14,7 @@
 //   · cloudreve-session 的 Max-Age = 5184000s = **60 天**，且**不滑动续期**（绝对过期）
 //
 // 于是本模块提供：从 cookie 值解出签发/到期时间、剩余天数与「临期档位」，
-// 供 sync.mjs（每次运行打印到期时间）与 check-session.mjs（临期开 Issue）共用，
+// 供 sync.mjs（每次运行打印到期时间）与 check-session.mjs（巡检时按档位告警）共用，
 // 避免两处各算一遍导致口径漂移。
 //
 // ============================ cookie 结构 ============================
@@ -191,7 +191,7 @@ export function maskSession(value) {
   return `${s.slice(0, 6)}…${s.slice(-6)}（共 ${s.length} 字符）`;
 }
 
-/** Unix 秒 → `YYYY-MM-DD HH:mm`（UTC+8），用于日志与 Issue 正文。 */
+/** Unix 秒 → `YYYY-MM-DD HH:mm`（UTC+8），用于日志与汇总页。 */
 export function fmtUnixCST(sec) {
   // ⚠ 必须先挡 null/undefined：Number(null) === 0 且 isFinite(0) 为真，
   //   否则「无签发时间」会被格式化成 1970-01-01，看起来像个正常日期（实测踩过）。

@@ -407,7 +407,7 @@ async function main() {
   const sess = sessionInfo(ENV.SESSION);
   if (sess.present) {
     // 每次运行都汇报会话寿命 —— 这样在 GHA 日志里能一眼看到还剩多久，
-    // 不必等失效了才发现（临期提醒另由 check-session.mjs 开 Issue）。
+    // 不必等失效了才发现（临期告警另由 check-session.mjs 在 probe job 里输出）。
     loginScope.line(
       `会话 cookie：${maskSession(ENV.SESSION)}`
       + `｜签发 ${fmtUnixCST(sess.issuedAt)}｜到期 ${fmtUnixCST(sess.expiresAt)}`

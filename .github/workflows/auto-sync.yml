@@ -10,7 +10,7 @@
 #     密码登录**已无法自动化** → 改用「人工登录一次 + 复用会话 cookie」（H1111_SESSION）。
 #     该 cookie 实测 60 天有效、不绑定 UA/IP、不滑动续期；
 #     取直链 purpose=direct_link 不受影响（required.interactive=0，仍只需 PoW）。
-#     会话到期前由 check-session.mjs 开 Issue 提醒（GitHub 会发邮件）。
+#     会话到期前由 check-session.mjs 在日志/运行页醒目提示（不发 Issue）。
 #     H1111_USER / H1111_PASSWORD 仅作**回退**保留（站点若改回密码登录可直接复用）。
 #   - 提交消息格式 `[GHA] 新增：内容：数据源：资源id-{id}：{版本列表&分隔}呜~` 由脚本生成，
 #     正文为该软件的过程日志（由 logger.mjs 的作用域自动收集，见 scripts/auto-sync/README.md）
@@ -35,8 +35,6 @@ on:
 
 permissions:
   contents: write
-  # 会话临期/失效时开提醒 Issue（check-session.mjs）——不涉及仓库内容，故仅需 issues
-  issues: write
 
 concurrency:
   group: auto-sync
@@ -60,14 +58,14 @@ jobs:
         with:
           node-version: '24'
 
-      # 会话巡检：离线推算到期时间（cookie 内嵌签发时间 + 60 天常量），
-      # 并实际打一次 GET /user/me 验活。临期 30/10/1 天或已失效 → 开 Issue 提醒。
-      # 放在 probe 里是因为它很便宜（两次请求），且能保证「即使没有新版本也每天检查一次」。
+      # 会话巡检：离线推算到期时间（cookie 内嵌签发时间 + 60 天常量）+ 实际打一次
+      # GET /user/me 验活（站点对匿名访问也签发新 cookie，只看时间戳会误判为健康）。
+      # 临期 30/10/1 天或已失效 → 写日志 + GHA 注解 + 汇总页表格（不发 Issue）。
+      # 放在 probe 里是因为它很便宜（一次请求），且能保证「即使没有新版本也每天检查一次」。
       - name: 会话 cookie 巡检
         run: node scripts/auto-sync/check-session.mjs
         env:
           H1111_SESSION: ${{ secrets.H1111_SESSION }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 预探测候选
         id: probe

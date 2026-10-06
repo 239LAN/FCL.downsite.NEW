@@ -93,9 +93,10 @@ docs/                   开发文档
 - **工作流**：`.github/workflows/auto-sync.yml`，采用 **probe + sync 双 job** 架构——probe 只读探测 GitHub Releases，无候选时直接跳过重量级的 sync job。
 - **脚本**：`scripts/auto-sync/`（Node 原生 ESM，无需 `npm install`），完成「GitHub Releases → 网盘离线下载 → 取直链 → 生成 JSON → 分软件提交」。
 - **数据落点**：`data/down/{id}/auto/{年}/{月}/{日}/{版本名}.json`，与历史手动数据共存。
-- **登录方式**：站点自 2026-10 起对**登录**启用交互式图形验证（人眼点选/输入字符），无法自动化。
+- **登录方式**：站点自 2026-10 起对**登录**启用交互式图形验证（人眼点选/输入/拖滑块），无法自动化。
   故采用「人工登录一次 + 复用会话 cookie」，存于 secret `H1111_SESSION`（实测 60 天有效）。
-  到期前由巡检脚本开 Issue 提醒；更新方法见 [scripts/auto-sync/README.md](scripts/auto-sync/README.md)「会话 cookie」一节。
+  剩余天数每次巡检都写在运行日志与 Actions 运行页顶部；更新方法见
+  [scripts/auto-sync/README.md](scripts/auto-sync/README.md)「会话 cookie」一节。
 
 触发时间、凭据与脚本配置以工作流和脚本内配置为准。设计细节见 [docs/auto-sync-design.md](docs/auto-sync-design.md)，脚本用法见 [scripts/auto-sync/README.md](scripts/auto-sync/README.md)，网盘 API 依据见 [docs/huang1111-api-notes.md](docs/huang1111-api-notes.md)。
 

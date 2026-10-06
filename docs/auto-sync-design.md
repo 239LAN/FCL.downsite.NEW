@@ -94,10 +94,11 @@ GHA workflow
        `cloudreve-session=` 前缀、引号、尾随换行。脏值会造成 401，而报错只会说「会话已失效」，
        用户想不到是多粘了字符。故 `session.mjs` 提供 `normalizeSession()`，在 `config.mjs`（环境变量入口）
        与 `loginWithSession()`（传值入口）统一清洗。
-- **会话到期提醒**：`check-session.mjs` 在 probe job 里运行（只读、不登录），
-  离线推算到期时间 + 实际打一次 `GET /user/me` 验活；剩余 **30 / 10 / 1 天**、**已失效**、
-  或**未配置 `H1111_SESSION`** 时开 GitHub Issue（会被 GitHub 邮件推送给仓库所有者，故人在学校也能收到）。
-  去重键是标题里带的到期时间，故同一份会话只提醒一次；问题解决后自动关闭该 Issue。
+- **会话到期提示**：`check-session.mjs` 在 probe job 里运行（只读，发一次 `GET /user/me` 验活），
+  把「还剩多久」写进 run 日志、GHA 注解与汇总页表格；剩余 **30 / 10 / 1 天**、**已失效**、
+  或**未配置 `H1111_SESSION`** 时用 `::warning::` / `::error::` 注解标出来（运行页顶部横幅 + 概览）。
+  **刻意不创建 Issue**：Issue 需要额外权限与去重逻辑，而注解与汇总页在运行页已经足够醒目，
+  不会因权限/去重出错而产生副作用。
   该脚本**任何情况下都 exit 0** —— 否则 probe job 报红会导致 sync job 被跳过，连同步机会都没有。
 - **验证方式（2026-10-02 起为 captcha policy v2）**：站点已**下线图形验证码通路**（`captchaCode` 失效），验证统一走 PoW：
   - 所有请求带 `X-Cloudreve-Captcha-Protocol: 2`（缺失 → `41709`）
@@ -194,8 +195,8 @@ GHA workflow
 | 风险 | 等级 | 缓解 |
 |---|---|---|
 | 网盘 API 是逆向产物，可能变更 | 中 | 所有调用集中在 `h1api.mjs` 一处，变更时只改封装；仓库记录 API 验证快照（见 `huang1111-api-notes.md`） |
-| 站点对登录强制交互式验证，密码登录无法自动化 | **已发生** | 改用会话 cookie（`H1111_SESSION`，60 天）；见 `huang1111-api-notes.md` §0.8 |
-| 会话 cookie 到期（60 天，不滑动续期）而人不在电脑前 | 中 | probe job 每天巡检，剩余 30/10/1 天或失效时开 Issue（GitHub 邮件推送）；`H1111_SESSION_TTL` 可在站点改时长时覆盖常量 |
+| 站点对登录强制交互式验证，密码登录无法自动化 | **已发生** | 改用会话 cookie（`H1111_SESSION`，60 天）；见 `huang1111-api-notes.md` §0.8 / §0.9 |
+| 会话 cookie 到期（60 天，不滑动续期）而人不在电脑前 | 中 | probe job 每天巡检，剩余 30/10/1 天或失效时在日志与运行页醒目提示（`::warning::`/`::error::` + 汇总页）；`H1111_SESSION_TTL` 可在站点改时长时覆盖常量 |
 | **把匿名 cookie 当成登录态**存进 secret | **中（已防）** | 站点对匿名访问也签发新 cookie，「时间新」不能证明已登录。故 `refresh-session.mjs` 与 `check-session.mjs` 均**实测验活**（`GET /user/me`）；前者在非登录态时拒绝输出，后者判为「已失效」而非「健康」 |
 | 凭据存于 Actions secret | 中 | secret 权限最小化；会话 cookie 可随时在网盘端「退出登录」作废 |
 | PoW 求解耗时（单线程逐 counter 试算，数十秒级） | 低 | 带 5s 一条的进度日志 + 硬超时（`RETRY.POW_SOLVE_TIMEOUT_MS`）；挑战有效期约 1200s 余量充足；失败换新挑战重走 |

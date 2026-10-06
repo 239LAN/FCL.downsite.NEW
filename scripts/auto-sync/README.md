@@ -9,7 +9,7 @@
 
 - `sync.mjs`：主流程（检测 → 离线下载 → 直链 → 写 JSON → 分软件提交 → push）
 - `probe.mjs`：预探测（只读，无候选时跳过 sync job）
-- `check-session.mjs`：会话 cookie 巡检（只读，临期/失效时开 Issue 提醒）
+- `check-session.mjs`：会话 cookie 巡检（只读，临期/失效时在日志与运行页告警）
 - `plan.mjs`：候选版本探测（**probe 与 sync 共用同一份实现**，避免两边口径漂移）
 - `logger.mjs`：**唯一日志实现**（树形缩进 / 提交正文收集 / GHA 注解 / 汇总页）
 - `lib.mjs`：纯函数与共享常量（**不持有任何日志状态**）
@@ -74,9 +74,11 @@ node scripts/auto-sync/tools/refresh-session.mjs
 > 而且每次请求都换新的。所以别看时间戳，要看脚本的「验活：✅ 服务端确认已登录」那一行。
 > 若脚本报「这份 cookie 是匿名的」，说明浏览器里其实没登录成功（或被退登了）。
 
-> 60 天到期后同步会失败。`check-session.mjs` 会在**剩余 30 / 10 / 1 天**、**已失效**、
-> 以及**压根没配 `H1111_SESSION`** 时自动开一个 GitHub Issue 提醒（GitHub 会发邮件），
-> 所以人在学校也能收到；问题解决后该 Issue 会被自动关闭。
+> 60 天到期后同步会失败。`check-session.mjs` 每次运行（probe job 里）都会**固定输出剩余天数**：
+> · 运行页顶部横幅：`::warning::线路1会话巡检：会话 cookie 剩余 X 天（到期 …｜状态）`
+> · 汇总页（Summary）一张固定字段的表：剩余 / 到期时间 / 签发时间 / 状态 / 服务端验活 / cookie 指纹
+>
+> 已失效时注解升级为 `::error::` 并追加「怎么解决」。**不发 Issue**（只在日志与运行页体现）。
 
 ### 回退：账号密码登录
 
@@ -90,7 +92,7 @@ node scripts/auto-sync/tools/refresh-session.mjs
 # 只跑预探测（不读凭据、不动网盘）
 node scripts/auto-sync/probe.mjs
 
-# 会话巡检（不登录、只读；本地跑不会开 Issue，仅打印结论）
+# 会话巡检（不登录、只读；打印剩余天数与告警）
 $env:H1111_SESSION = '你的会话 cookie 值'
 node scripts/auto-sync/check-session.mjs
 
@@ -323,7 +325,7 @@ commitSoftware(id, versionList, swScope.collectBody(), swScope);
 | 日志报 `41701 验证失败，请重试` | 走到验证链路时 cookie 不完整。脚本用 cookieJar 自动吸收 41700 下发的 `cloudreve_observer`，正常不该出现；若持续出现，检查是否手工改过请求头 |
 | 登录报 `401 Login required` /「会话 cookie 已失效」 | `H1111_SESSION` 过期（60 天）。按上面「会话 cookie」一节重新登录并更新 secret |
 | 登录报「缺少凭据」 | 没配 `H1111_SESSION`（且没配账号密码）。会话 cookie 是当前唯一可用路径 |
-| 收到「会话 cookie 即将过期」Issue | 正常提醒（30/10/1 天档）。回家按「会话 cookie」一节更新 secret 后，该 Issue 会自动关闭 |
+| 运行页横幅显示「会话 cookie 剩余 X 天」 | 正常。这是每次巡检的固定输出，方便一眼看到寿命；剩余 ≤30 天时会附「临期」标记，失效时变红（`::error::`） |
 | 日志报「站点要求交互式验证」 | 站点给该 purpose 开了点选/输入（`required.interactive > 0`）。**登录**必然如此 → 改用 `H1111_SESSION`；若**取直链**也变成这样，说明站点扩大了交互式范围，届时只能人工维护 |
 | 日志报 `41702` 限流 | 已按 `retry_after` 自动退避；若频繁出现说明触发频率限制，需拉长定时任务间隔 |
 | 日志出现「求解中… N/5000」 | 正常。PoW 求解为单线程逐 counter 试算，耗时数十秒，进度日志每 5s 一条，不是卡死 |
@@ -335,7 +337,7 @@ commitSoftware(id, versionList, swScope.collectBody(), swScope);
 ## 已知边界
 
 - 软件映射见 [`softwares.json`](softwares.json)；其余软件待后续扩展映射表
-- **登录无法自动化**：站点 2026-10-07 起对登录强制交互式验证（人眼点选/输入），
-  故依赖 `H1111_SESSION` 的人工续期（60 天一次）；过期前由 Issue 提醒
+- **登录无法自动化**：站点 2026-10-07 起对登录强制交互式验证（人眼点选/输入/拖滑块），
+  故依赖 `H1111_SESSION` 的人工续期（60 天一次）；剩余天数每次巡检都写在日志与运行页上
 - 单次运行中途若会话过期（401）不做自动重登（下次运行重新登录）；其余均在约定重试策略内自动恢复
 - 自动版本条目带 `size` 字段（前端 `formatBytes` 显示），手动旧条目无 `size` 不影响
