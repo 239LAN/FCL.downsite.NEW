@@ -86,8 +86,13 @@ export class H1Error extends Error {
 
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
-function logMsg(log, msg) {
+// 日志：调用方传入 logger.mjs 的作用域（Scope）或普通函数；本模块不持有任何日志状态。
+// 作用域模式下，每条消息自动获得当前层级的树形缩进。
+// opts.body === false → 该行只进 run 日志，不进提交正文（用于求解进度、轮询中间态这类过程噪声）。
+function say(log, msg, opts) {
+  if (!log) return;
   if (typeof log === 'function') log(msg);
+  else if (typeof log.line === 'function') log.line(msg, opts);
 }
 
 // ---------- cookie / CSRF ----------
@@ -171,7 +176,7 @@ async function genericAttempts(fn, label, log, attempts = RETRY.GENERIC_ATTEMPTS
       return await fn();
     } catch (e) {
       lastErr = e;
-      if (i < attempts) logMsg(log, `  [${label}] 第${i}次失败（${e.message}），重试…`);
+      if (i < attempts) say(log, `第${i}次失败（${e.message}），重试…`);
     }
   }
   throw lastErr;
@@ -232,8 +237,8 @@ async function solvePow(challenge, log) {
       256,
     ));
     if (bits.length === target.length && bits.every((b, i) => b === target[i])) {
-      if (typeof log === 'function' && counter > 0) {
-        logMsg(log, `  [PoW] 命中 counter=${counter}（试了 ${counter + 1} 个，用时 ${((Date.now() - t0) / 1000).toFixed(1)}s）`);
+      if (log && counter > 0) {
+        say(log, `PoW 命中 counter=${counter}（试了 ${counter + 1} 个，用时 ${((Date.now() - t0) / 1000).toFixed(1)}s）`);
       }
       return counter;
     }
@@ -241,9 +246,10 @@ async function solvePow(challenge, log) {
     if (now - t0 > budget) {
       throw new H1Error(`PoW 求解超时（${((now - t0) / 1000).toFixed(1)}s，已试 ${counter + 1}/${counterLimit}）`);
     }
-    if (typeof log === 'function' && now - lastLog >= TIMING.POW_PROGRESS_INTERVAL_MS) {
+    if (log && now - lastLog >= TIMING.POW_PROGRESS_INTERVAL_MS) {
       lastLog = now;
-      logMsg(log, `  [PoW] 求解中… ${counter + 1}/${counterLimit}（${((now - t0) / 1000).toFixed(1)}s）`);
+      // 进度行只进 run 日志：提交正文里没必要留几十行「求解中…」
+      say(log, `求解中… ${counter + 1}/${counterLimit}（${((now - t0) / 1000).toFixed(1)}s）`, { body: false });
     }
   }
   return null; // counterLimit 内未找到（正常不会发生）
@@ -303,7 +309,7 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
   let lastDetail = '';
 
   for (let attempt = 1; attempt <= RETRY.VERIFY_ATTEMPTS; attempt += 1) {
-    logMsg(log, `[${label}] 第 ${attempt}/${RETRY.VERIFY_ATTEMPTS} 次：正常请求`);
+    say(log, `第 ${attempt}/${RETRY.VERIFY_ATTEMPTS} 次：正常请求`, { body: false });
 
     let r;
     try {
@@ -314,14 +320,14 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
       );
     } catch (e) {
       lastDetail = `请求异常：${e.message}`;
-      logMsg(log, `  [${label}] ${lastDetail}，重试`);
+      say(log, `${lastDetail}，重试`);
       continue;
     }
 
     if (isSuccess(r)) return { ok: true, response: r };
     if (isTerminalFailure(r)) {
       lastDetail = `终态错误 code=${r.json?.code}（${r.json?.msg || ''}），重试无意义`;
-      logMsg(log, `  [${label}] ❌ ${lastDetail}`);
+      say(log, `❌ ${lastDetail}`);
       return { ok: false, response: r };
     }
     if (isInternalFailure(r)) {
@@ -330,7 +336,7 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
     if (isRateLimited(r)) {
       const wait = cooldownMs(r);
       lastDetail = `限流 code=41702，退避 ${(wait / 1000).toFixed(0)}s`;
-      logMsg(log, `  [${label}] ${lastDetail}`);
+      say(log, `${lastDetail}`);
       await sleep(wait);
       continue;
     }
@@ -340,13 +346,13 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
       const policy = r.json?.data;
       if (!policy || typeof policy.id !== 'string') {
         lastDetail = '41700 响应缺少 policy.id';
-        logMsg(log, `  [${label}] ${lastDetail}，重试`);
+        say(log, `${lastDetail}，重试`);
         continue;
       }
       const required = policy.required || {};
-      logMsg(
+      say(
         log,
-        `  [${label}] 需要验证：purpose=${policy.purpose || purpose} interactive=${required.interactive ?? '?'} pow=${required.pow ?? '?'} reason=${required.reason ?? '?'}`,
+        `需要验证：purpose=${policy.purpose || purpose} interactive=${required.interactive ?? '?'} pow=${required.pow ?? '?'} reason=${required.reason ?? '?'}`,
       );
 
       // 交互式验证（滑块/点选）无法自动完成 —— 明确报错，不要静默重试 3 遍浪费几分钟
@@ -358,7 +364,7 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
 
       if (!policy.pow || !policy.pow.token) {
         lastDetail = `41700 未提供 PoW 挑战（pow=${required.pow ?? '?'}）`;
-        logMsg(log, `  [${label}] ${lastDetail}，重试`);
+        say(log, `${lastDetail}，重试`);
         continue;
       }
 
@@ -368,10 +374,10 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
         const t0 = Date.now();
         counter = await solvePow(policy.pow, log);
         if (counter === null) throw new H1Error(`counterLimit(${policy.pow.counterLimit}) 内未找到答案`);
-        logMsg(log, `  [PoW] purpose=${policy.pow.purpose || purpose} → counter=${counter}（求解 ${((Date.now() - t0) / 1000).toFixed(1)}s）`);
+        say(log, `purpose=${policy.pow.purpose || purpose} → counter=${counter}（求解 ${((Date.now() - t0) / 1000).toFixed(1)}s）`);
       } catch (e) {
         lastDetail = `PoW 求解失败：${e.message}`;
-        logMsg(log, `  [${label}] ${lastDetail}，换新挑战重试`);
+        say(log, `${lastDetail}，换新挑战重试`);
         continue;
       }
 
@@ -387,7 +393,7 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
         );
       } catch (e) {
         lastDetail = `提交许可异常：${e.message}`;
-        logMsg(log, `  [${label}] ${lastDetail}，重试`);
+        say(log, `${lastDetail}，重试`);
         continue;
       }
 
@@ -395,15 +401,15 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
         if (isRateLimited(pr)) {
           const wait = cooldownMs(pr);
           lastDetail = `提交许可被限流，退避 ${(wait / 1000).toFixed(0)}s`;
-          logMsg(log, `  [${label}] ${lastDetail}`);
+          say(log, `${lastDetail}`);
           await sleep(wait);
         } else {
           lastDetail = `提交许可失败 code=${pr.json?.code}（${pr.json?.msg || pr.raw}）`;
-          logMsg(log, `  [${label}] ${lastDetail}，换新挑战重试`);
+          say(log, `${lastDetail}，换新挑战重试`);
         }
         continue;
       }
-      logMsg(log, `  [${label}] ✅ 许可已获得（ready=${pr.json?.data?.ready}）`);
+      say(log, `✅ 许可已获得（ready=${pr.json?.data?.ready}）`);
 
       // ---- ④ 带许可重发原请求 ----
       const permit = String(pr.json?.data?.id || policy.id);
@@ -417,14 +423,14 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
         );
       } catch (e) {
         lastDetail = `带许可重发异常：${e.message}`;
-        logMsg(log, `  [${label}] ${lastDetail}，重试`);
+        say(log, `${lastDetail}，重试`);
         continue;
       }
 
       // 走完链路后判断「是否只是响应形状不符」——这类失败重试整条链路毫无意义
       // （每次都要重新解一次几十秒的 PoW），直接抛出暴露问题。
       if (isSuccess(r)) {
-        logMsg(log, `  [${label}] ✅ 带许可重发成功`);
+        say(log, `✅ 带许可重发成功`);
         return { ok: true, response: r };
       }
       if (isShapeMismatch(r, isSuccess)) {
@@ -434,29 +440,29 @@ async function verifyThenSend({ url, method = 'POST', buildBody, purpose, label,
       }
       if (isTerminalFailure(r)) {
         lastDetail = `终态错误 code=${r.json?.code}（${r.json?.msg || ''}），重试无意义`;
-        logMsg(log, `  [${label}] ❌ ${lastDetail}`);
+        say(log, `❌ ${lastDetail}`);
         return { ok: false, response: r };
       }
       if (isRateLimited(r)) {
         const wait = cooldownMs(r);
         lastDetail = `限流 code=41702，退避 ${(wait / 1000).toFixed(0)}s`;
-        logMsg(log, `  [${label}] ${lastDetail}`);
+        say(log, `${lastDetail}`);
         await sleep(wait);
         continue;
       }
       // 又回到 41700 → 下一轮循环重走整条链路
       lastDetail = `带许可重发仍被要求验证 code=${r.json?.code}（${r.json?.msg || ''}）`;
-      logMsg(log, `  [${label}] ${lastDetail}，重试`);
+      say(log, `${lastDetail}，重试`);
       continue;
     }
 
     // 旧验证码失败码 / 其它未知错误：一并重试，不因站点换了个错误码就放弃
     if (isVerificationFailure(r)) {
       lastDetail = `验证失败 code=${r.json?.code}（${r.json?.msg || ''}）`;
-      logMsg(log, `  [${label}] ${lastDetail}，重试`);
+      say(log, `${lastDetail}，重试`);
     } else {
       lastDetail = `未知错误 HTTP ${r.httpStatus} code=${r.json?.code} ${r.json?.msg || r.raw}`;
-      logMsg(log, `  [${label}] ${lastDetail}，重试`);
+      say(log, `${lastDetail}，重试`);
     }
   }
 
@@ -479,7 +485,7 @@ export async function login(user, password, log) {
     throw new H1Error(`登录失败：HTTP ${r.response.httpStatus} ${r.response.json?.msg || r.response.raw}`);
   }
   isLoggedIn = true;
-  logMsg(log, '  [登录] 成功');
+  say(log, '登录成功');
 }
 
 // ---------- 目录 ----------
@@ -496,7 +502,7 @@ export async function listDir(netPath, log) {
 export async function createDir(netPath, log) {
   const found = await listDir(netPath, log);
   if (found.exists) return found;
-  logMsg(log, `  [目录] 创建 /${netPath}`);
+  say(log, `创建 /${netPath}`);
   const r = await genericAttempts(
     () => apiWithToken('PUT', '/directory', { path: '/' + netPath }),
     `建目录 ${netPath}`,
@@ -514,19 +520,19 @@ export async function createDir(netPath, log) {
 export async function deleteDir(netPath, log) {
   const found = await listDir(netPath, log);
   if (!found.exists) {
-    logMsg(log, `  [删除] 目录已不存在，跳过：/${netPath}`);
+    say(log, `目录已不存在，跳过：/${netPath}`);
     return false;
   }
   const dirId = found.parent;
   if (!dirId) throw new H1Error(`删除目录失败：未取得目录 id（/${netPath}）`);
-  logMsg(log, `  [删除] 删除目录 /${netPath}（id=${dirId}）`);
+  say(log, `删除目录 /${netPath}（id=${dirId}）`);
   const r = await genericAttempts(
     () => apiWithToken('DELETE', '/object', { items: [], dirs: [dirId], force: true }),
     `删除目录 ${netPath}`,
     log,
   );
   if (r.json?.code !== 0) throw new H1Error(`删除目录失败(HTTP ${r.httpStatus}): ${r.json?.msg || r.raw}`);
-  logMsg(log, `  [删除] ✅ 已删除 /${netPath}`);
+  say(log, `✅ 已删除 /${netPath}`);
 
   // 向上清理空父目录：逐级检查上级目录是否已无任何对象，空则一并删除（含 foldcraftlauncher_cn_auto 根），
   // 直到遇到非空目录或没有更上层为止；避免 keepLatest 清理后残留一串空目录
@@ -538,14 +544,14 @@ export async function deleteDir(netPath, log) {
     if ((parent.objects || []).length > 0) break; // 上级非空，停止清理
     const pid = parent.parent;
     if (!pid) break;
-    logMsg(log, `  [删除] 空父目录 /${parentPath} 一并删除（id=${pid}）`);
+    say(log, `空父目录 /${parentPath} 一并删除（id=${pid}）`);
     const pr = await genericAttempts(
       () => apiWithToken('DELETE', '/object', { items: [], dirs: [pid], force: true }),
       `删空父目录 ${parentPath}`,
       log,
     );
     if (pr.json?.code !== 0) {
-      logMsg(log, `  [删除] ⚠ 空父目录删除失败(HTTP ${pr.httpStatus}): ${pr.json?.msg || pr.raw}（继续尝试更上层）`);
+      say(log, `⚠ 空父目录删除失败(HTTP ${pr.httpStatus}): ${pr.json?.msg || pr.raw}（继续尝试更上层）`);
     }
   }
   return true;
@@ -581,7 +587,7 @@ export async function offlineDownload(urls, netPath, wantFiles, log) {
   const wantNames = wantFiles.map((w) => w.name);
   let lastErr = null;
   for (let attempt = 1; attempt <= RETRY.DOWNLOAD_ATTEMPTS; attempt += 1) {
-    logMsg(log, `  [离线下载] 第 ${attempt}/${RETRY.DOWNLOAD_ATTEMPTS} 次：准备处理 ${wantFiles.length} 个文件`);
+    say(log, `第 ${attempt}/${RETRY.DOWNLOAD_ATTEMPTS} 次：准备处理 ${wantFiles.length} 个文件`, { body: false });
     try {
       await createDir(netPath, log);
 
@@ -598,13 +604,13 @@ export async function offlineDownload(urls, netPath, wantFiles, log) {
         }
       }
       if (existingOk.size > 0) {
-        logMsg(log, `  [离线下载] 目录已存在 ${existingOk.size} 个匹配文件，跳过提交：${[...existingOk].join(', ')}`);
+        say(log, `目录已存在 ${existingOk.size} 个匹配文件，跳过提交：${[...existingOk].join(', ')}`);
       }
 
       // 2) 已在下载中的任务 → 跳过重复提交（避免 xxx(1)）
       const downloadingNames = await collectDownloadingNames(dst, wantNames);
       if (downloadingNames.size > 0) {
-        logMsg(log, `  [离线下载] 发现 ${downloadingNames.size} 个文件已在下载中，跳过重复提交`);
+        say(log, `发现 ${downloadingNames.size} 个文件已在下载中，跳过重复提交`);
       }
 
       // 3) 待提交列表（url ↔ file 成对，避免下标错位）
@@ -623,9 +629,9 @@ export async function offlineDownload(urls, netPath, wantFiles, log) {
           const batch = pending.slice(i, i + LIMIT.OFFLINE_BATCH);
           const batchNo = Math.floor(i / LIMIT.OFFLINE_BATCH) + 1;
           const totalBatches = Math.ceil(pending.length / LIMIT.OFFLINE_BATCH);
-          logMsg(
+          say(
             log,
-            `  [离线下载] 提交第 ${batchNo}/${totalBatches} 批（${batch.length} 个）：${batch.map((b) => b.file.name).join(', ')}`,
+            `提交第 ${batchNo}/${totalBatches} 批（${batch.length} 个）：${batch.map((b) => b.file.name).join(', ')}`,
           );
           const r = await genericAttempts(
             () =>
@@ -641,27 +647,27 @@ export async function offlineDownload(urls, netPath, wantFiles, log) {
           // 真实状态由随后的目录轮询决定
           const bad = (r.json?.data || []).filter((x) => x?.code !== 0);
           if (bad.length > 0) {
-            logMsg(
+            say(
               log,
-              `  [离线下载] 第 ${batchNo} 批提交返回非零码 ${bad.length} 个（${bad
+              `第 ${batchNo} 批提交返回非零码 ${bad.length} 个（${bad
                 .map((b) => b.msg || '')
                 .filter(Boolean)
                 .join('; ')}），以目录文件列表为准继续等待`,
             );
           }
-          logMsg(log, `  [离线下载] 等待第 ${batchNo} 批文件就绪…`);
+          say(log, `等待第 ${batchNo} 批文件就绪…`);
           await pollForFiles(netPath, batch.map((b) => b.file), log);
-          logMsg(log, `  [离线下载] ✅ 第 ${batchNo} 批文件已就绪`);
+          say(log, `✅ 第 ${batchNo} 批文件已就绪`);
         }
       } else {
-        logMsg(log, `  [离线下载] 全部 ${wantFiles.length} 个文件已在目录或下载中，跳过提交，直接轮询`);
+        say(log, `全部 ${wantFiles.length} 个文件已在目录或下载中，跳过提交，直接轮询`);
       }
 
       // 5) 最终全量确认（含之前已在下载的 + 本次各批新下载的）
       return await pollForFiles(netPath, wantFiles, log);
     } catch (e) {
       lastErr = e;
-      logMsg(log, `  [离线下载] 第 ${attempt} 次失败：${e.message}`);
+      say(log, `第 ${attempt} 次失败：${e.message}`);
       if (attempt < RETRY.DOWNLOAD_ATTEMPTS) await sleep(3000); // 下次提交前稍等
     }
   }
@@ -698,12 +704,13 @@ async function pollForFiles(netPath, wantFiles, log) {
           mismatched.push(`${w.name}(${o.size}≠${w.size})`);
         }
       }
-      // 进度只在"已匹配数量"变化时打，避免每 5s 刷屏
+      // 进度只在"已匹配数量"变化时打，避免每 5s 刷屏；且只进 run 日志（正文只留结论）
       if (matched.size !== lastMatched) {
-        logMsg(
+        say(
           log,
-          `  [离线下载] 轮询中：${matched.size}/${total} 个文件已就绪` +
+          `轮询中：${matched.size}/${total} 个文件已就绪` +
             (mismatched.length ? `；size 不符：${mismatched.join(', ')}` : ''),
+          { body: false },
         );
         lastMatched = matched.size;
       }
@@ -732,7 +739,7 @@ export async function getSources(fileIds, log) {
   if (!r.ok) {
     throw new H1Error(`取直链失败：HTTP ${r.response.httpStatus} ${r.response.json?.msg || r.response.raw}`);
   }
-  logMsg(log, `  [取直链] 成功（${fileIds.length} 个文件）`);
+  say(log, `取直链成功（${fileIds.length} 个文件）`);
   return r.response.json.data;
 }
 

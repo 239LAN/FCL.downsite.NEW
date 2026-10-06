@@ -21,12 +21,16 @@ import { emitKeypressEvents } from 'node:readline';
 
 import * as h1 from '../scripts/auto-sync/h1api.mjs';
 import {
-  ctx, ROOT, SOFTWARES,
+  ROOT, SOFTWARES,
   parseDataSourceIndex, versionKnown, versionFromTag, compareVersionsDescending, fetchReleasesPage,
 } from '../scripts/auto-sync/lib.mjs';
+import { Logger, errText } from '../scripts/auto-sync/logger.mjs';
 import {
   syncVersion, updateIndex, verifySyncedData, pruneSoftware, commitSoftware, push,
 } from '../scripts/auto-sync/sync.mjs';
+
+// 手动同步的日志走与 GHA 同一套 logger（树形缩进、无时间戳、无折叠分组）
+const logger = new Logger({ rootTitle: '线路1 本地交互式手动同步' });
 
 // ============================ 交互输入 ============================
 const input = process.stdin;
@@ -294,72 +298,69 @@ const GIT_MODE_TEXT = {
 };
 
 async function runSync({ sw, entries, todo, gitMode, user, password }) {
-  console.log('\n==== 登录 huang1111 ====');
+  const phase = logger.child(`同步资源 id=${sw.softwareId}（${sw.githubRepo}）`);
+  const loginScope = phase.child('登录 huang1111', { symbol: '▸', commit: false });
   try {
-    await h1.login(user, password, (m) => ctx.log(m));
+    await h1.login(user, password, loginScope);
+    loginScope.close('✅ 登录成功', { body: false });
   } catch (e) {
-    console.log('❌ 登录失败：' + e.message);
+    loginScope.close(`❌ 登录失败：${errText(e)}`, { kind: 'fail', body: false });
     process.exitCode = 1;
     return;
   }
 
-  // 与 GHA 相同：拦截 ctx.log，本软件这段日志作为 commit body
-  const swLog = [];
-  const origLog = ctx.log.bind(ctx);
-  ctx.log = (msg) => { swLog.push(msg); origLog(msg); };
+  // 提交正文 = 本软件作用域整棵树的正文（与 GHA 完全同源，不再猴补丁拦截全局 log）
+  const swScope = phase.child(`同步 ${todo.length} 个选定版本`, { symbol: '▸' });
 
   let failed = false;
   const synced = [];
   try {
     for (const item of todo) {
-      console.log(`\n══ 版本 ${item.version} ══`);
+      const vScope = swScope.child(`版本 ${item.version}`);
       try {
-        const result = await syncVersion(sw, item.version, item.release);
+        const result = await syncVersion(sw, item.version, item.release, vScope);
         if (result) synced.push(result);
-        else ctx.log(`  ⚠ 版本 ${item.version} 无可用资产，跳过`);
+        else vScope.close(`⏭️ 版本 ${item.version} 无可用资产，跳过`, { kind: 'warn' });
       } catch (e) {
         failed = true;
-        ctx.log(`  ❌ 版本 ${item.version} 同步失败（按重试策略耗尽仍失败）：${e.message}`);
+        vScope.close(`❌ 版本 ${item.version} 同步失败（重试策略已耗尽）：${errText(e)}`, { kind: 'fail' });
       }
     }
 
     if (!synced.length) {
-      ctx.log('（本次无成功同步的版本，不更新 index.json）');
-    } else {
-      mkdirSync(join(ROOT, 'data', 'down', String(sw.softwareId)), { recursive: true });
-      const indexPath = updateIndex(sw.softwareId, entries, synced);
-      ctx.log(`    ✅ 已更新 ${rel(indexPath)}（+${synced.length} 个版本）`);
-      verifySyncedData(sw, synced);
-      await pruneSoftware(sw);
+      swScope.close('⚠️ 本次无成功同步的版本，不更新 index.json', { kind: 'warn' });
+      phase.close('⚠️ 结束：无成功同步的版本');
+      return;
+    }
 
-      if (gitMode === 'n') {
-        console.log('\nℹ 未提交（按选择 n）。数据文件已写入，可自行 git add / commit。');
-      } else {
-        const versionList = synced.map((s) => s.version).sort(compareVersionsDescending).join('&');
-        ctx.log(`    提交版本列表：${versionList}`);
-        const committed = commitSoftware(sw.softwareId, versionList, swLog);
-        if (committed && gitMode === 'a') {
-          console.log('\n==== 推送远程 ====');
-          push();
-        } else if (committed) {
-          console.log('\nℹ 已本地提交（未推送）。需要时可手动 git push。');
-        }
+    mkdirSync(join(ROOT, 'data', 'down', String(sw.softwareId)), { recursive: true });
+    const idx = updateIndex(sw.softwareId, entries, synced);
+    swScope.line(`✅ 已更新 ${rel(idx.indexPath)}：+${idx.added} 个版本条目（总 ${idx.total} 条）`);
+    verifySyncedData(sw, synced, swScope);
+    await pruneSoftware(sw, swScope);
+
+    if (gitMode === 'n') {
+      swScope.line('ℹ 按选择 n：未提交，数据文件已写入，可自行 git add / commit');
+    } else {
+      const versionList = synced.map((s) => s.version).sort(compareVersionsDescending).join('&');
+      swScope.line(`提交版本列表：${versionList}`);
+      const committed = commitSoftware(sw.softwareId, versionList, swScope.collectBody(), swScope);
+      if (committed && gitMode === 'a') {
+        push(swScope);
+      } else if (committed) {
+        swScope.line('ℹ 已本地提交（未推送）。需要时可手动 git push。');
       }
     }
+    swScope.close(`✅ 同步 ${synced.length} 个版本完成`);
+    phase.close('✅ 完成');
   } catch (e) {
     failed = true;
-    ctx.log(`❌ ${e.message}`);
-  } finally {
-    ctx.log = origLog;
+    swScope.close(`❌ ${errText(e)}`, { kind: 'fail' });
+    phase.close('❌ 处理失败', { kind: 'fail' });
   }
 
-  console.log('\n==== 完成 ====');
-  if (failed) {
-    console.log('⚠ 存在失败项，详见上方日志。');
-    process.exitCode = 1;
-  } else if (synced.length) {
-    console.log(`✅ 成功同步 ${synced.length} 个版本：${synced.map((s) => s.version).join('、')}`);
-  }
+  logger.line(failed ? '⚠️ 存在失败项，详见上方日志。' : '✅ 手动同步完成。');
+  if (failed) process.exitCode = 1;
 }
 
 // ============================ 主流程 ============================

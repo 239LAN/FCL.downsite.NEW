@@ -9,6 +9,11 @@
 #   - 站点自 2026-10-02 起改为 captcha policy v2，图形验证码通路已被后端下线，
 #     验证全靠 PoW（算法未变），故**不再需要 Python / pip / OCR 依赖**
 #   - 提交消息格式 `[GHA] 新增：内容：数据源：资源id-{id}：{版本列表&分隔}呜~` 由脚本生成，
+#     正文为该软件的过程日志（由 logger.mjs 的作用域自动收集，见 scripts/auto-sync/README.md）
+#
+# 日志（2026-10 重构）：
+#   - 缩进由作用域树自动推导；无时间戳前缀（GH 自带）、无 ::group:: 折叠、末尾不重打整份日志
+#   - 每个 job 的概览在运行页顶部「Summary」的详细表格里（GITHUB_STEP_SUMMARY）
 #
 # 需要配置仓库 Secrets：
 #   H1111_USER      — huang1111 登录账号
@@ -78,7 +83,5 @@ jobs:
           H1111_USER: ${{ secrets.H1111_USER }}
           H1111_PASSWORD: ${{ secrets.H1111_PASSWORD }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: 汇总失败标记
-        if: failure() && steps.sync.conclusion == 'failure'
-        run: echo "::warning::线路1自动同步存在失败项，请查看上方日志"
+        # 失败告警由脚本内的 logger.annotate('error', …) 发出（运行页顶部红色横幅），
+        # 这里不再额外加一步 echo "::warning::"，避免同一件事说两遍。

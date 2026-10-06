@@ -1,0 +1,339 @@
+[main c360f5d] [GHA] 新增：内容：数据源：资源id-0：1.3.3.8呜~
+ 2 files changed, 34 insertions(+), 2 deletions(-)
+ create mode 100644 data/down/0/auto/2026/10/6/1.3.3.8.json
+[main 1ee7d6e] [GHA] 新增：内容：数据源：资源id-15：v1.9.8呜~
+ 3 files changed, 13 insertions(+), 152 deletions(-)
+ create mode 100644 data/down/15/auto/2026/10/7/v1.9.8.json
+ delete mode 100644 data/down/15/auto/2026/9/4/v1.9.5.json
+
+==============================================================================
+  ①  RUN 日志（GitHub Actions 里看到的就是这个）
+==============================================================================
+线路1 自动同步 · 7 个软件
+├─ 阶段 1：预探测候选
+│  ├─ 资源 id=0（FCL-Team/FoldCraftLauncher）
+│  │  ├─ 数据源基线：data/down/0/index.json
+│  │  ├─ 数据源最新版本：1.3.3.7
+│  │  ├─ 数据源版本条目：132 个（不含置顶/无法解析版本的条目）
+│  │  ├─ GitHub Releases：2 个（非 draft、非 prerelease、tag 含数字）
+│  │  ├─ 可解析版本号：2 个（其余 tag 不以数字开头，已排除）
+│  │  ├─ 最新版本：1.3.3.8（tag 1.3.3.8，发布于 2026-10-06）
+│  │  ├─ 落后 1 个版本：1.3.3.8
+│  │  └─ ✅ 需同步 1 个版本
+│  ├─ 资源 id=3（ZalithLauncher/ZalithLauncher2）
+│  │  ├─ 数据源基线：data/down/3/index.json
+│  │  ├─ 数据源最新版本：2.6.1
+│  │  ├─ 数据源版本条目：37 个（不含置顶/无法解析版本的条目）
+│  │  ├─ GitHub Releases：1 个（非 draft、非 prerelease、tag 含数字）
+│  │  ├─ 可解析版本号：1 个（其余 tag 不以数字开头，已排除）
+│  │  ├─ 最新版本：2.6.1（tag 2.6.1，发布于 2026-09-28）
+│  │  ├─ 已是最新（数据源 2.6.1 ≥ Release 最新 2.6.1）
+│  │  └─ ✅ 已是最新，无需同步
+│  ├─ 资源 id=4（AngelAuraMC/Amethyst-Android）
+│  │  ├─ 数据源基线：data/down/4/index.json
+│  │  ├─ 数据源最新版本：1.1.7
+│  │  ├─ 数据源版本条目：8 个（不含置顶/无法解析版本的条目）
+│  │  ├─ GitHub Releases：1 个（非 draft、非 prerelease、tag 含数字）
+│  │  ├─ 可解析版本号：1 个（其余 tag 不以数字开头，已排除）
+│  │  ├─ 最新版本：1.1.7（tag 1.1.7，发布于 2026-07-31）
+│  │  ├─ 已是最新（数据源 1.1.7 ≥ Release 最新 1.1.7）
+│  │  └─ ✅ 已是最新，无需同步
+│  ├─ 资源 id=12（LZZLHY/amcl）
+│  │  ├─ 数据源基线：data/down/12/index.json
+│  │  ├─ 数据源最新版本：v1.0.5
+│  │  ├─ 数据源版本条目：6 个（不含置顶/无法解析版本的条目）
+│  │  ├─ GitHub Releases：1 个（非 draft、非 prerelease、tag 含数字）
+│  │  ├─ 可解析版本号：1 个（其余 tag 不以数字开头，已排除）
+│  │  ├─ 最新版本：v1.0.5（tag v1.0.5，发布于 2026-09-24）
+│  │  ├─ 已是最新（数据源 v1.0.5 ≥ Release 最新 v1.0.5）
+│  │  └─ ✅ 已是最新，无需同步
+│  ├─ 资源 id=15（Mystic-Stars/Axolotl）
+│  │  ├─ 数据源基线：data/down/15/index.json
+│  │  ├─ 数据源最新版本：v1.9.7
+│  │  ├─ 数据源版本条目：3 个（不含置顶/无法解析版本的条目）
+│  │  ├─ GitHub Releases：2 个（非 draft、非 prerelease、tag 含数字）
+│  │  ├─ 可解析版本号：2 个（其余 tag 不以数字开头，已排除）
+│  │  ├─ 最新版本：v1.9.8（tag v1.9.8，发布于 2026-10-06）
+│  │  ├─ 落后 1 个版本：v1.9.8
+│  │  └─ ✅ 需同步 1 个版本
+│  ├─ 资源 id=16（Acode-Foundation/Acode）
+│  │  ├─ 数据源基线：data/down/16/index.json
+│  │  ├─ 数据源最新版本：v1.13.5
+│  │  ├─ 数据源版本条目：6 个（不含置顶/无法解析版本的条目）
+│  │  ├─ GitHub Releases：1 个（非 draft、非 prerelease、tag 含数字）
+│  │  ├─ 可解析版本号：1 个（其余 tag 不以数字开头，已排除）
+│  │  ├─ 最新版本：v1.13.5（tag v1.13.5，发布于 2026-09-13）
+│  │  ├─ 已是最新（数据源 v1.13.5 ≥ Release 最新 v1.13.5）
+│  │  └─ ✅ 已是最新，无需同步
+│  ├─ 资源 id=17（rikkahub/rikkahub）
+│  │  ├─ 数据源基线：data/down/17/index.json
+│  │  ├─ 数据源最新版本：2.5.6
+│  │  ├─ 数据源版本条目：3 个（不含置顶/无法解析版本的条目）
+│  │  ├─ GitHub Releases：1 个（非 draft、非 prerelease、tag 含数字）
+│  │  ├─ 可解析版本号：1 个（其余 tag 不以数字开头，已排除）
+│  │  ├─ 最新版本：2.5.6（tag 2.5.6，发布于 2026-10-01）
+│  │  ├─ 已是最新（数据源 2.5.6 ≥ Release 最新 2.5.6）
+│  │  └─ ✅ 已是最新，无需同步
+│  └─ ✅ 阶段 1 完成：7 个软件｜2 个需同步｜用时 113ms
+├─ 阶段 2：同步 2 个软件
+│  ├─ 登录 huang1111
+│  │  ├─ 站点：https://pan.huang1111.cn｜账号：pr***r
+│  │  ├─ 第 1/3 次：正常请求
+│  │  ├─ 需要验证：purpose=login interactive=0 pow=compatible reason=normal
+│  │  ├─ PoW 命中 counter=7（试了 8 个，用时 0.0s）
+│  │  ├─ purpose=login → counter=7（求解 0.0s）
+│  │  ├─ ✅ 许可已获得（ready=true）
+│  │  ├─ ✅ 带许可重发成功
+│  │  ├─ 登录成功
+│  │  └─ ✅ 登录成功｜用时 29ms
+│  ├─ 资源 id=0（FCL-Team/FoldCraftLauncher）
+│  │  ├─ 版本模式：arch｜资产过滤 /\.apk$/
+│  │  ├─ 数据源最新：1.3.3.7｜本次候选 1 个：1.3.3.8
+│  │  ├─ 版本 1.3.3.8
+│  │  │  ├─ Release 标题：1.3.3.8
+│  │  │  ├─ tag：1.3.3.8｜发布时间：2026-10-06 11:21（UTC+8）
+│  │  │  ├─ 资产过滤：/\.apk$/｜原始 6 个 → 匹配 5 个
+│  │  │  ├─ 按 arch 模式解析出 5 个文件（合计 1006.1 MiB）：
+│  │  │  │  · FCL-release-1.3.3.8-all.apk → all（331.2 MiB）
+│  │  │  │  · FCL-release-1.3.3.8-arm64-v8a.apk → arm64-v8a（172.6 MiB）
+│  │  │  │  · FCL-release-1.3.3.8-armeabi-v7a.apk → armeabi-v7a（165.1 MiB）
+│  │  │  │  · FCL-release-1.3.3.8-x86.apk → x86（158.9 MiB）
+│  │  │  │  · FCL-release-1.3.3.8-x86_64.apk → x86_64（178.3 MiB）
+│  │  │  ├─ 网盘目标目录：/foldcraftlauncher_cn_auto/0/2026/10/6/1.3.3.8
+│  │  │  ├─ 离线下载
+│  │  │  │  ├─ 网盘目录不存在，开始下载
+│  │  │  │  ├─ 第 1/3 次：准备处理 5 个文件
+│  │  │  │  ├─ 创建 /foldcraftlauncher_cn_auto/0/2026/10/6/1.3.3.8
+│  │  │  │  ├─ 提交第 1/1 批（5 个）：FCL-release-1.3.3.8-all.apk, FCL-release-1.3.3.8-arm64-v8a.apk, FCL-release-1.3.3.8-armeabi-v7a.apk, FCL-release-1.3.3.8-x86.apk, FCL-release-1.3.3.8-x86_64.apk
+│  │  │  │  ├─ 等待第 1 批文件就绪…
+│  │  │  │  ├─ 轮询中：0/5 个文件已就绪
+│  │  │  │  ├─ 轮询中：3/5 个文件已就绪
+│  │  │  │  ├─ 轮询中：5/5 个文件已就绪
+│  │  │  │  ├─ ✅ 第 1 批文件已就绪
+│  │  │  │  ├─ 轮询中：5/5 个文件已就绪
+│  │  │  │  └─ ✅ 下载完成｜用时 10.0s
+│  │  │  ├─ ✅ 目录校验通过：5 个文件全部就绪且 size 精确匹配
+│  │  │  ├─ 取直链
+│  │  │  │  ├─ 第 1/3 次：正常请求
+│  │  │  │  ├─ 需要验证：purpose=direct_link interactive=0 pow=compatible reason=normal
+│  │  │  │  ├─ PoW 命中 counter=7（试了 8 个，用时 0.0s）
+│  │  │  │  ├─ purpose=direct_link → counter=7（求解 0.0s）
+│  │  │  │  ├─ ✅ 许可已获得（ready=true）
+│  │  │  │  ├─ ✅ 带许可重发成功
+│  │  │  │  ├─ 取直链成功（5 个文件）
+│  │  │  │  └─ ✅ 取到 5 条直链｜用时 15ms
+│  │  │  ├─ ✅ 已写 data/down/0/auto/2026/10/6/1.3.3.8.json（5 个文件，共 1006.1 MiB）
+│  │  │  ├─ 直链：
+│  │  │  │  · all：https://pan.huang1111.cn/f/6mlo2h/FCL-release-1.3.3.8-all.apk（331.2 MiB）
+│  │  │  │  · arm64-v8a：https://pan.huang1111.cn/f/tc0kha/FCL-release-1.3.3.8-arm64-v8a.apk（172.6 MiB）
+│  │  │  │  · armeabi-v7a：https://pan.huang1111.cn/f/saoloi/FCL-release-1.3.3.8-armeabi-v7a.apk（165.1 MiB）
+│  │  │  │  · x86：https://pan.huang1111.cn/f/me3lej/FCL-release-1.3.3.8-x86.apk（158.9 MiB）
+│  │  │  │  · x86_64：https://pan.huang1111.cn/f/mjdl7e/FCL-release-1.3.3.8-x86_64.apk（178.3 MiB）
+│  │  │  └─ ✅ 版本同步完成：1.3.3.8
+│  │  ├─ ✅ 已更新 data/down/0/index.json：+1 个版本条目（版本条目共 133 个，置顶 1 个，总 134 条）
+│  │  ├─ ✅ 提交前校验通过：1 个版本 JSON / URL 前缀 https://pan.huang1111.cn/f/ / size 合法 / index.json 条目齐全
+│  │  ├─ 保留清理
+│  │  │  └─ 无需清理（keepLatest=0）｜用时 1ms
+│  │  ├─ 提交版本列表：1.3.3.8
+│  │  ├─ ✅ 已提交：[GHA] 新增：内容：数据源：资源id-0：1.3.3.8呜~（正文 41 行）
+│  │  └─ ✅ 完成：同步 1 个版本并提交｜用时 10.4s
+│  ├─ 资源 id=15（Mystic-Stars/Axolotl）
+│  │  ├─ 版本模式：name｜keepLatest=3
+│  │  ├─ 数据源最新：v1.9.7｜本次候选 1 个：v1.9.8
+│  │  ├─ 版本 v1.9.8
+│  │  │  ├─ Release 标题：Axolotl Launcher v1.9.8
+│  │  │  ├─ tag：v1.9.8｜发布时间：2026-10-07 04:00（UTC+8）
+│  │  │  ├─ 资产过滤：（不过滤）｜原始 1 个 → 匹配 1 个
+│  │  │  ├─ 按 name 模式解析出 1 个文件（合计 48.7 MiB）：
+│  │  │  │  · Axolotl-1.9.8.apk → Axolotl-1.9.8（48.7 MiB）
+│  │  │  ├─ 网盘目标目录：/foldcraftlauncher_cn_auto/15/2026/10/7/v1.9.8
+│  │  │  ├─ 离线下载
+│  │  │  │  ├─ 网盘目录不存在，开始下载
+│  │  │  │  ├─ 第 1/3 次：准备处理 1 个文件
+│  │  │  │  ├─ 创建 /foldcraftlauncher_cn_auto/15/2026/10/7/v1.9.8
+│  │  │  │  ├─ 提交第 1/1 批（1 个）：Axolotl-1.9.8.apk
+│  │  │  │  ├─ 等待第 1 批文件就绪…
+│  │  │  │  ├─ 轮询中：0/1 个文件已就绪
+│  │  │  │  ├─ 轮询中：1/1 个文件已就绪
+│  │  │  │  ├─ ✅ 第 1 批文件已就绪
+│  │  │  │  ├─ 轮询中：1/1 个文件已就绪
+│  │  │  │  └─ ✅ 下载完成｜用时 5.0s
+│  │  │  ├─ ✅ 目录校验通过：1 个文件全部就绪且 size 精确匹配
+│  │  │  ├─ 取直链
+│  │  │  │  ├─ 第 1/3 次：正常请求
+│  │  │  │  ├─ 需要验证：purpose=direct_link interactive=0 pow=compatible reason=normal
+│  │  │  │  ├─ PoW 命中 counter=7（试了 8 个，用时 0.0s）
+│  │  │  │  ├─ purpose=direct_link → counter=7（求解 0.0s）
+│  │  │  │  ├─ ✅ 许可已获得（ready=true）
+│  │  │  │  ├─ ✅ 带许可重发成功
+│  │  │  │  ├─ 取直链成功（1 个文件）
+│  │  │  │  └─ ✅ 取到 1 条直链｜用时 11ms
+│  │  │  ├─ ✅ 已写 data/down/15/auto/2026/10/7/v1.9.8.json（1 个文件，共 48.7 MiB）
+│  │  │  ├─ 直链：
+│  │  │  │  · Axolotl-1.9.8：https://pan.huang1111.cn/f/rltw7e/Axolotl-1.9.8.apk（48.7 MiB）
+│  │  │  └─ ✅ 版本同步完成：v1.9.8
+│  │  ├─ ✅ 已更新 data/down/15/index.json：+1 个版本条目（版本条目共 4 个，置顶 0 个，总 4 条）
+│  │  ├─ ✅ 提交前校验通过：1 个版本 JSON / URL 前缀 https://pan.huang1111.cn/f/ / size 合法 / index.json 条目齐全
+│  │  ├─ 保留清理
+│  │  │  ├─ keepLatest=3，现有版本 4 个 → 清理 1 个最旧版本
+│  │  │  ├─ 待清理：v1.9.5
+│  │  │  ├─ 保留：v1.9.8、v1.9.7、v1.9.6
+│  │  │  ├─ 删除目录 /foldcraftlauncher_cn_auto/15/2026/9/4/v1.9.5（id=dir-2）
+│  │  │  ├─ ✅ 已删除 /foldcraftlauncher_cn_auto/15/2026/9/4/v1.9.5
+│  │  │  ├─ 已删除本地 data/down/15/auto/2026/9/4/v1.9.5.json
+│  │  │  ├─ ✅ 已更新 index.json（移除 1 个条目）
+│  │  │  └─ ✅ 已清理 1 个最旧版本｜用时 5ms
+│  │  ├─ 提交版本列表：v1.9.8
+│  │  ├─ ✅ 已提交：[GHA] 新增：内容：数据源：资源id-15：v1.9.8呜~（正文 42 行）
+│  │  └─ ✅ 完成：同步 1 个版本并提交｜用时 5.4s
+│  └─ ✅ 阶段 2 完成｜用时 16.0s
+├─ 阶段 3：推送远程
+│  ├─ ✅ 已推送 origin/main
+│  └─ ✅ 推送完成｜用时 867ms
+总用时 16.9s｜结果：全部成功｜成功软件 7/7
+
+
+==============================================================================
+  ②  GITHUB_STEP_SUMMARY（Actions 运行页顶部「Summary」）
+==============================================================================
+### 线路1 自动同步汇总
+
+| 资源 id | 仓库 | 数据源最新 | 数据源条目 | GitHub Release | 落后版本 | 本次同步 | 保留清理 | 结果 | 用时 |
+|---:|---|---|---:|---:|---|---|---|---|---:|
+| 0 | FCL-Team/FoldCraftLauncher | 1.3.3.7 | 132 | 2 | 1.3.3.8 | 1.3.3.8 | — | ✅ 已同步并提交 | 10.6s |
+| 3 | ZalithLauncher/ZalithLauncher2 | 2.6.1 | 37 | 1 | — | — | — | ✅ 已是最新 | 8ms |
+| 4 | AngelAuraMC/Amethyst-Android | 1.1.7 | 8 | 1 | — | — | — | ✅ 已是最新 | 8ms |
+| 12 | LZZLHY/amcl | v1.0.5 | 6 | 1 | — | — | — | ✅ 已是最新 | 3ms |
+| 15 | Mystic-Stars/Axolotl | v1.9.7 | 3 | 2 | v1.9.8 | v1.9.8 | v1.9.5 | ✅ 已同步并提交 | 15.9s |
+| 16 | Acode-Foundation/Acode | v1.13.5 | 6 | 1 | — | — | — | ✅ 已是最新 | 2ms |
+| 17 | rikkahub/rikkahub | 2.5.6 | 3 | 1 | — | — | — | ✅ 已是最新 | 2ms |
+
+- 整体结果：**✅ 全部成功**
+- 成功软件：7 / 7｜产生提交：是
+- 总用时：16.9s
+
+
+
+==============================================================================
+  ③  真实产生的 git commit（主旨 + 正文）
+==============================================================================
+———— 第 1 个提交 ————
+
+[GHA] 新增：内容：数据源：资源id-15：v1.9.8呜~
+
+资源 id=15（Mystic-Stars/Axolotl）
+  版本模式：name｜keepLatest=3
+  数据源最新：v1.9.7｜本次候选 1 个：v1.9.8
+  版本 v1.9.8
+    Release 标题：Axolotl Launcher v1.9.8
+    tag：v1.9.8｜发布时间：2026-10-07 04:00（UTC+8）
+    资产过滤：（不过滤）｜原始 1 个 → 匹配 1 个
+    按 name 模式解析出 1 个文件（合计 48.7 MiB）：
+      · Axolotl-1.9.8.apk → Axolotl-1.9.8（48.7 MiB）
+    网盘目标目录：/foldcraftlauncher_cn_auto/15/2026/10/7/v1.9.8
+    离线下载
+      网盘目录不存在，开始下载
+      创建 /foldcraftlauncher_cn_auto/15/2026/10/7/v1.9.8
+      提交第 1/1 批（1 个）：Axolotl-1.9.8.apk
+      等待第 1 批文件就绪…
+      ✅ 第 1 批文件已就绪
+      ✅ 下载完成｜用时 5.0s
+    ✅ 目录校验通过：1 个文件全部就绪且 size 精确匹配
+    取直链
+      需要验证：purpose=direct_link interactive=0 pow=compatible reason=normal
+      PoW 命中 counter=7（试了 8 个，用时 0.0s）
+      purpose=direct_link → counter=7（求解 0.0s）
+      ✅ 许可已获得（ready=true）
+      ✅ 带许可重发成功
+      取直链成功（1 个文件）
+      ✅ 取到 1 条直链｜用时 11ms
+    ✅ 已写 data/down/15/auto/2026/10/7/v1.9.8.json（1 个文件，共 48.7 MiB）
+    直链：
+      · Axolotl-1.9.8：https://pan.huang1111.cn/f/rltw7e/Axolotl-1.9.8.apk（48.7 MiB）
+    ✅ 版本同步完成：v1.9.8
+  ✅ 已更新 data/down/15/index.json：+1 个版本条目（版本条目共 4 个，置顶 0 个，总 4 条）
+  ✅ 提交前校验通过：1 个版本 JSON / URL 前缀 https://pan.huang1111.cn/f/ / size 合法 / index.json 条目齐全
+  保留清理
+    keepLatest=3，现有版本 4 个 → 清理 1 个最旧版本
+    待清理：v1.9.5
+    保留：v1.9.8、v1.9.7、v1.9.6
+    删除目录 /foldcraftlauncher_cn_auto/15/2026/9/4/v1.9.5（id=dir-2）
+    ✅ 已删除 /foldcraftlauncher_cn_auto/15/2026/9/4/v1.9.5
+    已删除本地 data/down/15/auto/2026/9/4/v1.9.5.json
+    ✅ 已更新 index.json（移除 1 个条目）
+    ✅ 已清理 1 个最旧版本｜用时 5ms
+  提交版本列表：v1.9.8
+
+
+———— 第 2 个提交 ————
+
+[GHA] 新增：内容：数据源：资源id-0：1.3.3.8呜~
+
+资源 id=0（FCL-Team/FoldCraftLauncher）
+  版本模式：arch｜资产过滤 /\.apk$/
+  数据源最新：1.3.3.7｜本次候选 1 个：1.3.3.8
+  版本 1.3.3.8
+    Release 标题：1.3.3.8
+    tag：1.3.3.8｜发布时间：2026-10-06 11:21（UTC+8）
+    资产过滤：/\.apk$/｜原始 6 个 → 匹配 5 个
+    按 arch 模式解析出 5 个文件（合计 1006.1 MiB）：
+      · FCL-release-1.3.3.8-all.apk → all（331.2 MiB）
+      · FCL-release-1.3.3.8-arm64-v8a.apk → arm64-v8a（172.6 MiB）
+      · FCL-release-1.3.3.8-armeabi-v7a.apk → armeabi-v7a（165.1 MiB）
+      · FCL-release-1.3.3.8-x86.apk → x86（158.9 MiB）
+      · FCL-release-1.3.3.8-x86_64.apk → x86_64（178.3 MiB）
+    网盘目标目录：/foldcraftlauncher_cn_auto/0/2026/10/6/1.3.3.8
+    离线下载
+      网盘目录不存在，开始下载
+      创建 /foldcraftlauncher_cn_auto/0/2026/10/6/1.3.3.8
+      提交第 1/1 批（5 个）：FCL-release-1.3.3.8-all.apk, FCL-release-1.3.3.8-arm64-v8a.apk, FCL-release-1.3.3.8-armeabi-v7a.apk, FCL-release-1.3.3.8-x86.apk, FCL-release-1.3.3.8-x86_64.apk
+      等待第 1 批文件就绪…
+      ✅ 第 1 批文件已就绪
+      ✅ 下载完成｜用时 10.0s
+    ✅ 目录校验通过：5 个文件全部就绪且 size 精确匹配
+    取直链
+      需要验证：purpose=direct_link interactive=0 pow=compatible reason=normal
+      PoW 命中 counter=7（试了 8 个，用时 0.0s）
+      purpose=direct_link → counter=7（求解 0.0s）
+      ✅ 许可已获得（ready=true）
+      ✅ 带许可重发成功
+      取直链成功（5 个文件）
+      ✅ 取到 5 条直链｜用时 15ms
+    ✅ 已写 data/down/0/auto/2026/10/6/1.3.3.8.json（5 个文件，共 1006.1 MiB）
+    直链：
+      · all：https://pan.huang1111.cn/f/6mlo2h/FCL-release-1.3.3.8-all.apk（331.2 MiB）
+      · arm64-v8a：https://pan.huang1111.cn/f/tc0kha/FCL-release-1.3.3.8-arm64-v8a.apk（172.6 MiB）
+      · armeabi-v7a：https://pan.huang1111.cn/f/saoloi/FCL-release-1.3.3.8-armeabi-v7a.apk（165.1 MiB）
+      · x86：https://pan.huang1111.cn/f/me3lej/FCL-release-1.3.3.8-x86.apk（158.9 MiB）
+      · x86_64：https://pan.huang1111.cn/f/mjdl7e/FCL-release-1.3.3.8-x86_64.apk（178.3 MiB）
+    ✅ 版本同步完成：1.3.3.8
+  ✅ 已更新 data/down/0/index.json：+1 个版本条目（版本条目共 133 个，置顶 1 个，总 134 条）
+  ✅ 提交前校验通过：1 个版本 JSON / URL 前缀 https://pan.huang1111.cn/f/ / size 合法 / index.json 条目齐全
+  提交版本列表：1.3.3.8
+
+
+==============================================================================
+  ④  校验
+==============================================================================
+✅ run 日志含树形缩进 ├─
+✅ run 日志无 ::group:: 折叠
+✅ run 日志无行首时间戳
+✅ run 日志无末尾重打
+✅ 产生了 2 个软件的提交
+✅ id=15 主旨以 [GHA] 开头
+✅ id=15 正文含资源 id 小节
+✅ id=15 正文含直链
+✅ id=15 正文无时间戳前缀
+✅ id=15 正文无阶段级噪声
+✅ id=15 正文无登录噪声
+✅ id=15 正文不含其他软件
+✅ id=0 主旨以 [GHA] 开头
+✅ id=0 正文含资源 id 小节
+✅ id=0 正文含直链
+✅ id=0 正文无时间戳前缀
+✅ id=0 正文无阶段级噪声
+✅ id=0 正文无登录噪声
+✅ id=0 正文不含其他软件
+✅ 汇总含详细表头
+
+沙箱：C:\Users\XIAOLU~1\AppData\Local\Temp\autosync-preview-7mZX1L（保留以便你查看；不需要时可删）

@@ -1,5 +1,9 @@
-// lib.mjs — 线路1 自动同步：纯函数 + 共享状态
-// 供 sync.mjs（正式同步）与 probe.mjs（预探测）复用，不含任何 h1 / git / 写文件的副作用
+// lib.mjs — 线路1 自动同步：纯函数 + 共享常量
+// 供 sync.mjs / probe.mjs / plan.mjs 复用，不含任何 h1 / git / 写文件的副作用。
+//
+// ⚠ 2026-10 日志全量重构：本文件**不再持有任何日志状态**（旧的可变 ctx 已整体删除）。
+//   日志实现只有一处 —— logger.mjs。需要打日志的函数改为**接收回调**（见 fetchReleasesPage
+//   的 onLog 参数），由调用方决定挂到哪个作用域上；这样再也没有「全局可变 log 被猴补丁替换」的脏东西。
 import { existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,63 +14,6 @@ import { ENV, RETRY } from './config.mjs';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..', '..');
 const SOFTWARES = JSON.parse(readFileSync(join(HERE, 'softwares.json'), 'utf8'));
-
-// ---------- 日志（可变 ctx.log 以便调用方在作用域内拦截） ----------
-const stamp = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
-
-export const ctx = {
-  runLog: [],
-  summaryLines: [], // GITHUB_STEP_SUMMARY markdown 行
-  _timers: {},
-  log(msg) {
-    const line = `[${stamp()}] ${msg}`;
-    this.runLog.push(line);
-    console.log(line);
-  },
-  // GHA 折叠分组：Actions UI 可折叠；本地退化为普通分隔行
-  group(title) {
-    const plain = `[${stamp()}] ══ ${title} ══`;
-    this.runLog.push(plain);
-    if (ENV.IS_GHA) {
-      console.log(`::group::${title}`);
-    } else {
-      console.log(plain);
-    }
-  },
-  endGroup() {
-    if (ENV.IS_GHA) console.log('::endgroup::');
-  },
-  // GHA 注释标记（错误/警告），同时写普通日志行
-  error(msg) {
-    if (ENV.IS_GHA) console.log(`::error::${msg}`);
-    this.log(`❌ ${msg}`);
-  },
-  warn(msg) {
-    if (ENV.IS_GHA) console.log(`::warning::${msg}`);
-    this.log(`⚠ ${msg}`);
-  },
-  // 阶段计时
-  start(name) {
-    this._timers[name] = Date.now();
-    return this._timers[name];
-  },
-  end(name) {
-    const ms = Date.now() - (this._timers[name] || Date.now());
-    delete this._timers[name];
-    return ms;
-  },
-  // 汇总页（GITHUB_STEP_SUMMARY）收集
-  sum(text) {
-    this.summaryLines.push(text);
-  },
-  async flushSummary() {
-    const p = process.env.GITHUB_STEP_SUMMARY;
-    if (p && this.summaryLines.length) {
-      const fs = await import('node:fs');
-      fs.appendFileSync(p, this.summaryLines.join('\n') + '\n');
-    }
-  },
-};
 
 // ---------- 版本比较（与前端 js/adapters/download/common.js 一致） ----------
 const VERSION_NUMBER = /\d+/g;
@@ -146,7 +93,7 @@ export function isPinnedEntry(entry) {
 // 不代表数据源最新版本，不能参与"落后几个版本"的判定。
 export function parseDataSourceIndex(softwareId) {
   const indexPath = join(ROOT, 'data', 'down', String(softwareId), 'index.json');
-  if (!existsSync(indexPath)) return { latest: null, entries: [] };
+  if (!existsSync(indexPath)) return { latest: null, entries: [], versionCount: 0 };
   let entries = [];
   try {
     entries = JSON.parse(readFileSync(indexPath, 'utf8'));
@@ -160,9 +107,9 @@ export function parseDataSourceIndex(softwareId) {
     const key = entrySortKey(e);
     if (key != null) versions.push(key);
   }
-  if (!versions.length) return { latest: null, entries };
+  if (!versions.length) return { latest: null, entries, versionCount: 0 };
   versions.sort(compareVersionsDescending);
-  return { latest: versions[0], entries };
+  return { latest: versions[0], entries, versionCount: versions.length };
 }
 
 // ---------- 判定版本是否已在数据源内 ----------
@@ -179,9 +126,13 @@ export function versionKnown(entries, version) {
 
 // ---------- GitHub Releases ----------
 // 拉取一页 Release（per_page=100）。返回 { releases: 过滤后的列表, hasNext: 是否还有下一页 }：
-//   · 过滤口径与旧 fetchReleases 完全一致：非 draft、（可选）非 prerelease、tag 含数字
+//   · 过滤口径与改造前完全一致：非 draft、（可选）非 prerelease、tag 含数字
 //   · hasNext 依据响应头 Link 的 rel="next"（比"是否满页"可靠：draft/prerelease 过滤不影响判断）
-export async function fetchReleasesPage(githubRepo, includePrerelease, page = 1) {
+//
+// onLog：可选回调，接收单行字符串。日志实现由调用方（logger.mjs 的作用域）提供，
+//        本文件不持有任何日志状态 —— 这是 2026-10 日志重构的核心约束。
+export async function fetchReleasesPage(githubRepo, includePrerelease, page = 1, onLog = null) {
+  const say = (m) => { if (typeof onLog === 'function') onLog(m); };
   const url = `https://api.github.com/repos/${githubRepo}/releases?per_page=100&page=${page}`;
   let lastErr = null;
   for (let attempt = 1; attempt <= RETRY.GENERIC_ATTEMPTS; attempt += 1) {
@@ -202,15 +153,17 @@ export async function fetchReleasesPage(githubRepo, includePrerelease, page = 1)
       };
     } catch (e) {
       lastErr = e;
-      if (attempt < RETRY.GENERIC_ATTEMPTS) ctx.log(`  [GitHub] 拉取失败（第${attempt}次）：${e.message}，重试…`);
+      if (attempt < RETRY.GENERIC_ATTEMPTS) {
+        say(`GitHub 拉取失败（第 ${attempt}/${RETRY.GENERIC_ATTEMPTS} 次）：${e.message}，重试…`);
+      }
     }
   }
   throw new Error(`GitHub 拉取失败：${lastErr?.message || '未知'}`);
 }
 
-// 返回第一页过滤后的 Releases 数组（GHA 的 probe / sync 使用，口径与改造前一致）
-export async function fetchReleases(githubRepo, includePrerelease) {
-  return (await fetchReleasesPage(githubRepo, includePrerelease, 1)).releases;
+// 返回第一页过滤后的 Releases 数组（口径与改造前一致）
+export async function fetchReleases(githubRepo, includePrerelease, onLog = null) {
+  return (await fetchReleasesPage(githubRepo, includePrerelease, 1, onLog)).releases;
 }
 
 // ---------- 资产 → 版本文件条目 ----------

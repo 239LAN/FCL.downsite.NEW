@@ -6,11 +6,16 @@ export const ENV = {
   HOST: (process.env.H1111_HOST || 'https://pan.huang1111.cn').replace(/\/+$/, ''),
   USER: process.env.H1111_USER || '',
   PASSWORD: process.env.H1111_PASSWORD || '',
-  // GitHub 相关（GHA 自动注入；本地运行时可不带）
-  GITHUB_TOKEN: process.env.GITHUB_TOKEN || '',
+  // GitHub 相关：
+  //   · GHA 里由平台自动注入 GITHUB_TOKEN（无需配置）
+  //   · 本地跑时手动 export GITHUB_TOKEN 可把 API 限额从 60 次/时 提到 5000 次/时；
+  //     只读公开数据用**无需任何权限**的 token 即可（classic 不勾 scope / fine-grained 只读 public）
+  //   · 兼容 gh CLI 惯用的 GH_TOKEN（两个都设时 GITHUB_TOKEN 优先）
+  GITHUB_TOKEN: process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '',
   GITHUB_REPOSITORY: process.env.GITHUB_REPOSITORY || '',
   GITHUB_REF_NAME: process.env.GITHUB_REF_NAME || '',
-  IS_GHA: process.env.GITHUB_ACTIONS === 'true',
+  // 注：不再有 IS_GHA —— 旧 ctx 用它决定是否发 ::group::，日志重构后已无用。
+  //     需要判断是否在 Actions 里时，直接看 process.env.GITHUB_ACTIONS（logger.mjs 就是这么做的）。
   // 单个版本的离线下载轮询上限（毫秒），可按需覆盖
   DOWNLOAD_TIMEOUT_MS: Number(process.env.AUTO_SYNC_DOWNLOAD_TIMEOUT_MS || 2 * 60 * 1000),
 };

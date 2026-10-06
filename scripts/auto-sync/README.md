@@ -9,10 +9,16 @@
 
 - `sync.mjs`：主流程（检测 → 离线下载 → 直链 → 写 JSON → 分软件提交 → push）
 - `probe.mjs`：预探测（只读，无候选时跳过 sync job）
-- `lib.mjs`：纯函数与共享状态
+- `plan.mjs`：候选版本探测（**probe 与 sync 共用同一份实现**，避免两边口径漂移）
+- `logger.mjs`：**唯一日志实现**（树形缩进 / 提交正文收集 / GHA 注解 / 汇总页）
+- `lib.mjs`：纯函数与共享常量（**不持有任何日志状态**）
 - `h1api.mjs`：huang1111 API 封装（含新版验证链路与 PoW 求解）
 - `config.mjs`：环境变量与常量（**改配置看这里**）
 - `softwares.json`：软件映射表（**有哪些软件看这里**）
+
+> ⚠️ 2026-10 日志全量重构：旧的可变全局 `ctx`（`ctx.log` / `ctx.group` / `ctx.sum` …）**已整体删除**。
+> 需要打日志的函数改为**接收作用域或回调**，再也没有「猴补丁替换全局 log」这种写法。
+> 详见下节「日志」。
 
 ## 触发
 
@@ -45,6 +51,64 @@ node scripts/auto-sync/sync.mjs
 ```
 
 可用的环境变量、默认值与重试常量统一在 [`config.mjs`](config.mjs) 中定义，以其为准。
+
+### 本地 GitHub Token（可选，但强烈建议）
+
+不配 token 时，GitHub API 走**匿名限额：60 次/小时**（按出口 IP 计）。
+本脚本每个软件要拉一次 Release 列表，7 个软件一轮就是 7 次；
+反复调试很容易把额度跑光，之后会看到：
+
+```
+GitHub 拉取失败（第 1/2 次）：GitHub API HTTP 403，重试…
+❌ 探测失败：GitHub 拉取失败：GitHub API HTTP 403
+```
+
+**GHA 里不需要这个** —— 平台自动注入 `GITHUB_TOKEN`（5000 次/小时）。只有本地调试才要配。
+
+#### 1. 生成 token
+
+打开 <https://github.com/settings/tokens>，二选一：
+
+| 类型 | 怎么建 | 权限 |
+|---|---|---|
+| **Fine-grained**（推荐） | Fine-grained tokens → Generate new token | **Public Repositories (read-only)** 即可，不选任何仓库 |
+| **Classic** | Tokens (classic) → Generate new token (classic) | **一个 scope 都不要勾** |
+
+> 本脚本只用 token **读公开的 Release 列表**，不推代码（推送走的是 GHA 自己的 token）。
+> 所以**不需要** `repo` / `workflow` 之类的权限，给最小权限最安全。
+
+#### 2. 让脚本读到它
+
+三个途径任选其一（脚本按 `GITHUB_TOKEN` → `GH_TOKEN` 的顺序取，先有的优先）：
+
+```powershell
+# ① 当前会话临时用（最常用；关掉终端就没了，不会污染系统）
+$env:GITHUB_TOKEN = 'ghp_xxxxxxxxxxxx'
+node scripts/auto-sync/sync.mjs
+```
+
+```powershell
+# ② 永久写进用户环境变量（一次配置，长期有效）
+[Environment]::SetEnvironmentVariable('GITHUB_TOKEN', 'ghp_xxxxxxxxxxxx', 'User')
+# 之后新开的终端自动带上；当前窗口要重开才生效
+```
+
+```powershell
+# ③ 用 gh CLI 惯用的变量名（脚本同样认）
+$env:GH_TOKEN = 'ghp_xxxxxxxxxxxx'
+```
+
+#### 3. 验证
+
+```powershell
+node scripts/auto-sync/probe.mjs
+```
+
+看到「GitHub Releases：N 个」就是通了；仍报 403 说明 token 没被读到（检查变量名拼写），
+或额度按 IP 被其他程序占满。
+
+> ⚠️ 不要把 token 写进仓库里的任何文件（`.env`、脚本、`config.mjs` 都不要）。
+> `config.mjs` 只从环境变量读，仓库里永远不落凭据。
 
 ## 数据结构（站内 `data/down/{id}/`）
 
@@ -107,15 +171,88 @@ POST /site/captcha/policy { id, pow_payload }   ← 字段名是 pow_payload（�
 
 任一步耗尽后：该版本跳过（不写 JSON），其余版本继续；存在失败项时进程以非 0 退出，GHA 显示红色即告警，下次运行自动补。
 
+## 日志（logger.mjs）
+
+2026-10 全量重构，**旧的 `ctx` 日志模块已整体作废**。新规则：
+
+| 要求 | 做法 |
+|---|---|
+| 详细明了 | 关键事实逐条列出：资产名、字节数、网盘路径、直链、校验结果都不省略 |
+| 结构清晰的缩进 | 树形前缀 `├─ │ └─` 由作用域嵌套**自动推导**，调用方不手写空格 |
+| 保留提交正文带日志 | 每个软件作用域自动收集正文，见下 |
+| 不在末尾重复整份日志 | 控制台逐行输出即唯一 run 日志，**没有**「--- 完整日志 ---」重打 |
+| 每行不带时间戳 | GH Actions 自己给每行打时间；耗时只在阶段收口行里说一次 |
+| 不用折叠分组 | 不调 `::group::` / `::endgroup::`，层级靠缩进表达 |
+
+**缩进模型**：作用域树，**每一行都是一个树节点、都有分支符**：
+
+| 行类型 | 前缀 | 说明 |
+|---|---|---|
+| 作用域标题 | `├─ ` | 画在本级 |
+| 普通行 | `│  ├─ ` | 比标题深一级 |
+| 清单项（`items()`） | `│  │  · ` | 再深一级，`·` 与 `├─` 区分 |
+| 结论（`close()`） | `│  └─ ` | 本作用域最后一行 |
+
+前缀 = `│  ` × (depth − 1)。根作用域（depth 0）没有树线，散行平铺。
+**为什么这样是流式安全的**：`└─` 只出现在 `close()`，那一刻在定义上就是最后一行，无需预知未来；
+祖先竖线统一画 `│  `（不断言"祖先之后还有没有兄弟"），所以行一旦输出就永不回改，GHA 的非 TTY 日志也不会错位。
+
+```
+线路1 自动同步 · 7 个软件
+├─ 阶段 1：预探测候选
+│  ├─ 资源 id=0（FCL-Team/FoldCraftLauncher）
+│  │  ├─ 数据源最新版本：1.3.3.7
+│  │  ├─ 落后 1 个版本：1.3.3.8
+│  │  └─ ✅ 需同步 1 个版本
+│  ├─ 资源 id=3（ZalithLauncher/ZalithLauncher2）
+│  │  └─ ✅ 已是最新，无需同步
+│  └─ ✅ 阶段 1 完成｜用时 3.6s
+├─ 阶段 2：同步 1 个软件
+│  ├─ 资源 id=0（FCL-Team/FoldCraftLauncher）
+│  │  ├─ 版本 1.3.3.8
+│  │  │  ├─ 按 arch 模式解析出 5 个文件（合计 1006.1 MiB）：
+│  │  │  │  · FCL-release-1.3.3.8-all.apk → all（331.2 MiB）
+│  │  │  │  · FCL-release-1.3.3.8-arm64-v8a.apk → arm64-v8a（172.6 MiB）
+│  │  │  ├─ 离线下载
+│  │  │  │  ├─ 提交第 1/1 批（5 个）：…
+│  │  │  │  └─ ✅ 下载完成｜用时 10.0s
+│  │  │  └─ ✅ 版本同步完成：1.3.3.8
+│  │  └─ ✅ 完成：同步 1 个版本并提交｜用时 10.3s
+│  └─ ✅ 阶段 2 完成｜用时 16.0s
+└─ 总用时 16.8s｜结果：全部成功｜成功软件 7/7
+```
+
+**提交正文**：`资源 id=…` 作用域内产生的行会自动进入该软件的 commit body；
+阶段级/登录级内容用 `commit: false` 排除，过程噪声（PoW 求解进度、轮询中间态）用 `body: false` 排除；
+进入作用域时还不知道会不会有事的小节（如 `keepLatest=0` 时的「保留清理」）可用 `dropFromBody()` 事后抹掉。
+正文按**实际发生顺序**生成，无需手工拼装（缩进用纯空格而非树线，更适合 `git log` 阅读）：
+
+```javascript
+const swScope = phase.child(`资源 id=${sw.softwareId}（${sw.githubRepo}）`);
+swScope.line('…');                       // 进正文
+swScope.items(['…', '…']);               // 清单项，进正文时保留 '· '
+const v = swScope.child(`版本 ${version}`);
+v.line('…');                             // 进正文，自动多缩进一层
+v.close('✅ 版本同步完成');               // 结论行进正文
+commitSoftware(id, versionList, swScope.collectBody(), swScope);
+```
+
+**汇总页**（`GITHUB_STEP_SUMMARY`）是一张**详细表格**，与 run 日志分工不同、内容不重复：
+资源 id / 仓库 / 数据源最新 / 数据源条目数 / Release 数 / 落后版本 / 本次同步 / 保留清理 / 结果 / 用时。
+
+**失败可见性**：`::error::` / `::warning::` / `::notice::` 只发 GHA 注解（Actions 页顶部红色/黄色横幅），
+**不再把同一句话在 run 日志里抄第二遍**。
+
 ## 提交格式（每软件一个 commit）
 
 ```
 [GHA] 新增：内容：数据源：资源id-{id}：{版本1&版本2&...}呜~
-（空行）
-{本次该软件的详细日志}
+
+{该软件的详细过程日志：从「资源 id=…」到最终结论，按发生顺序，含资产清单与直链}
 ```
 
 - 主题以 `[GHA]` 开头，与 `updata-verInfo.yml` 的防重入判断兼容，不会互相触发
+- 正文即上面那个作用域的 `collectBody()` 结果，**不含**阶段级/登录级内容，也不含整份 run 日志
 
 ## 新增/维护软件
 
@@ -134,7 +271,7 @@ POST /site/captcha/policy { id, pow_payload }   ← 字段名是 pow_payload（�
 | 日志报 `41701 验证失败，请重试` | 提交 `POST /site/captcha/policy` 时 cookie 不全。必须带 `cloudreve-session` + `cloudreve_observer` + `cloudreve_send` 全部 cookie |
 | 日志报「站点要求交互式验证」 | 站点给该 purpose 开了滑块/点选（`required.interactive > 0`），脚本无法自动完成，需人工处理 |
 | 日志报 `41702` 限流 | 已按 `retry_after` 自动退避；若频繁出现说明触发频率限制，需拉长定时任务间隔 |
-| 日志出现「[PoW] 求解中…」 | 正常。求解为单线程逐 counter 试算，耗时数十秒，进度日志每 5s 一条，不是卡死 |
+| 日志出现「求解中… N/5000」 | 正常。PoW 求解为单线程逐 counter 试算，耗时数十秒，进度日志每 5s 一条，不是卡死 |
 
 > 怀疑站点又改了验证机制时，先跑项目外测试目录的 `_probe-v2-protocol.mjs` 确认（路径与用法见 [`docs/auto-sync-design.md`](../../docs/auto-sync-design.md) 开头）。
 
