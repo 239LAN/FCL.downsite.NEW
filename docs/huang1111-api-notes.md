@@ -1,14 +1,13 @@
 # huang1111 网盘 API 逆向解析（Cloudreve v3 定制版）
 
-> 状态：**2026-10-07 起「登录」改成交互式验证（人眼点选/输入/拖滑块），无法自动化**；取直链不受影响。
-> 自动同步因此改用「人工登录一次 + 复用会话 cookie（`H1111_SESSION`，60 天）」，见 §0.8。
+> 本文只描述**站点协议本身**（端点、字段、错误码、实测行为）。
+> 本站如何取用这些协议（脚本设计、secret 配置、定时任务等）见 [`auto-sync-design.md`](auto-sync-design.md)
+> 与 [`../scripts/auto-sync/README.md`](../scripts/auto-sync/README.md)。
 >
-> 历史：站点 2026-10-02 升级为 **captcha policy v2**（旧的「图形验证码 captchaCode」与「裸 PoW powPayload」两条通路作废），
-> 现为「41700 挑战 → PoW → policy 许可 → permit 重发」两段式。
-> 记录日期：2026-08-25（3.8.5 重测 2026-08-26；2026-08-28 全面复核并修订过时/错误项 + 扩展新端点；2026-09-26 新增 PoW 协议章节；2026-10-02 重写 §0.3 / §0.6 / §0.7 为 captcha policy v2；**2026-10-07 新增 §0.8 交互式验证与会话复用**）
+> 记录日期：2026-08-25（3.8.5 重测 2026-08-26；2026-08-28 全面复核并修订过时/错误项 + 扩展新端点；2026-09-26 新增 PoW 协议章节；2026-10-02 重写 §0.3 / §0.6 / §0.7 为 captcha policy v2；**2026-10-07 新增 §0.8 交互式验证、§0.9 会话 cookie**）
 > 来源：真实登录态会话实测 + 前端 JS bundle 分析（`pan.huang1111.cn/static/js/`，版本 `3.8.7`）
 > 范围：仅收录已实测端点；"已失效/未实测"见 §9
-> 复核：站点若再改验证机制，用项目外测试目录里的 `_probe-v2-*.mjs` 探针快速确认（路径与用法见 [`auto-sync-design.md`](auto-sync-design.md) 开头）。返回 `41709` 多半是协议头/版本变了。
+> 复核：站点若再改验证机制，用项目外测试目录里的探针快速确认（路径与用法见 [`auto-sync-design.md`](auto-sync-design.md) 开头）。返回 `41709` 多半是协议头/版本变了。
 
 ---
 
@@ -243,25 +242,25 @@ POST /api/v3/site/captcha/policy
 
 ---
 
-### 0.8 交互式验证（2026-10-07 新增）—— 登录无法再自动化
+### 0.8 交互式验证（interactive，2026-10-07 新增）
 
 > 来源：前端 bundle（`main.4af620e7.chunk.js` module 313 / 511525 / 521901…）+ 假凭据实测。
-> 影响：**只有 `purpose=login` 受影响**；`direct_link` 经实测 `required.interactive=0`，仍只用 PoW。
+> 这是 captcha policy v2 的**另一条分支**：`required.interactive > 0` 时，除 PoW 外还要完成人机交互。
+> 实测只有部分 purpose 会走到这一支；`direct_link` 不在此列（见下）。
 
-**站点配置里新增的字段**
+**站点配置里相关字段**（`GET /site/config` → `data`）
 
 ```jsonc
-// GET /site/config → data
 "captcha_policy": {
   "mode": "enforce",
-  "overrides": {},                     // 可按 purpose 强制 interactive/combined，当前为空
+  "overrides": {},                     // 可按 purpose 强制 interactive/combined；当前为空
   "purposes": ["login", "register", ..., "direct_link", ...],
   "send_interactive_first": true       // 2026-10-02 时不存在的新字段
 }
 "captcha_type": "pow", "pow_protocol": "cloudreve-pow-v1", "pow_fallback": true
 ```
 
-前端判定「该 purpose 要不要交互式」的逻辑（module 313 `a()`，逆向所得）：
+前端判定「某 purpose 要不要交互式」的逻辑（module 313 `a()`，逆向所得）：
 
 ```js
 overrides[purpose] === 'interactive' || 'combined'  → 要
@@ -275,10 +274,10 @@ overrides[purpose] === 'interactive' || 'combined'  → 要
 ```jsonc
 "required": { "interactive": 1, "pow": "", "level": 0, "reason": "normal" }
 "interactive_done": false,  "pow_done": true,  "ready": false
-//      ↑ 注意：pow 字段为空且 pow_done 已为 true —— 登录**不再下发 PoW**，只剩交互式这一道坎
+//      ↑ pow 字段为空且 pow_done 已为 true —— 该 purpose 只下发交互式，不下发 PoW
 ```
 
-**交互式题目结构（`policy.interactive`）**
+**题目结构（`policy.interactive`）**
 
 ```jsonc
 {
@@ -289,54 +288,51 @@ overrides[purpose] === 'interactive' || 'combined'  → 要
   "scene":  "data:image/png;base64,…",  // 底图，320x240，约 40~90KB（内嵌，无需另外下载）
   "prompt": "data:image/png;base64,…",  // 提示图，144x64，约 1.6~2.3KB（要你找的字符）
   "width": 320, "height": 240,
-  "count": 2,               // 需要点选/输入/拖动的数量（click/text 用；slide 见下）
+  "count": 2,               // 需要点选/输入/拖动的数量
   "expires": 1791313855
 }
 ```
 
 - 前端校验：`version===2 && id && kind ∈ ['click','text','slide']`
-- 三种 kind 的提交体不同（`slide` 复用 `points`，取拖动终点）：
-  - `click`：`{ points: [{x,y}, …], question_id: <interactive.id> }`（凑满 `count` 个即自动提交）
-  - `text`：`{ text, question_id }`
-  - `slide`：`{ points: [...], question_id }`（与 click 同形；前端用滑块组件产出坐标）
 - **答案不下发**（已核对无 `dots`/`answer`/`points` 等字段）
-- 提交仍走 `POST /site/captcha/policy`，但 body 不同：
-  - `click`：`{ points: [{x,y}, …], question_id: <interactive.id> }`（凑满 `count` 个即自动提交）
-  - `text`：`{ text, question_id }`
-  - 坐标为**归一化 0~1**：`x = (clientX - rect.left) / rect.width`
-- 判分：答错 → **`41701`**（"Verification failed. Please retry."，允许重试）；挑战过期 `41706`；尝试耗尽 `41708`
 
-**为什么不做自动化破解**
+**提交（走 `POST /site/captcha/policy`，body 与 PoW 分支不同）**
 
-试过「零模型 FFT 模板匹配」（`_probe-v3-match2.py`）：7 个字模里只有 3 个可信，
-且最佳与次佳峰差极小（0.01~0.06），说明字符经过缩放/形变/干扰处理，纯模板匹配不稳。
-而交互式验证是**有状态**的（对比旧图形验证码：无状态、每次换图、可零成本重试），
-试错成本高且有 `41708` 耗尽风险 ⇒ 放弃。
+```jsonc
+// click / slide
+{ "points": [{ "x": 0.55, "y": 0.22 }, …], "question_id": "<interactive.id>" }
+// text
+{ "text": "…", "question_id": "<interactive.id>" }
+```
 
-**替代方案：复用会话 cookie（当前采用）**
+- 坐标为**归一化 0~1**：`x = (clientX - rect.left) / rect.width`（`y` 同理）
+- `points` 凑满 `count` 个即由前端自动提交
+- 判分：答错 → **`41701`**（"Verification failed. Please retry."，**允许重试**）；
+  挑战过期 `41706`；尝试耗尽 `41708`
 
-实测结论（全部为 2026-10-07 本地验证）：
+---
 
-| 项 | 值 | 验证方式 |
-|---|---|---|
-| `cloudreve-session` 有效期 | **60 天**（`Max-Age=5184000`） | 响应头 + Firefox 库记录 + cookie 内嵌时间戳，三方吻合 |
-| 是否滑动续期 | **否**（绝对过期） | 重复请求观察 Set-Cookie，服务端不再重签 |
-| 是否绑定 User-Agent | **否** | 同一 cookie 用 5 种 UA（含无 UA / curl）请求 `/user/me` 均 `code=0` |
-| 是否绑定来源 IP | **否** | 直连 vs 经代理（出口 IP 不同）均 `code=0` |
-| 取直链是否要交互式 | **不要** | `direct_link` 的 `required={interactive:0, pow:"compatible"}` |
-| 需要哪些 cookie | **只需 `cloudreve-session`** | 只带它即可走完 PoW → policy → permit 拿到直链 |
-| `cloudreve_observer`（仅 1 天） | **无需保存** | 由 41700 响应自动下发，cookieJar 吸收即可 |
+### 0.9 会话 cookie（`cloudreve-session`，2026-10-07 实测）
 
-**cookie 值的结构**（用于离线推算到期时间，不必联网）
+**值结构**（gorilla/securecookie）
 
 ```
 base64url( "<签发 Unix 秒>|<载荷>|<24 字节 HMAC>" )
 ```
 
-⚠️ cookie **不含**过期时间 —— 有效期是服务端配置。
-故到期时间 = 内嵌签发时间 + 60 天常量（该常量可用 `H1111_SESSION_TTL` 覆盖，站点改时长时不必改代码）。
+⚠️ cookie **不含过期时间** —— 有效期是服务端配置，只能从响应头或实测推算。
 
-**🔑🔑 匿名访问也会签发 cookie（2026-10-07 实测，极易踩）**
+**实测属性**
+
+| 项 | 值 | 验证方式 |
+|---|---|---|
+| 有效期 | `Set-Cookie: … Max-Age=5184000`（**60 天**） | 响应头 + Firefox 库记录 + 内嵌时间戳，三方吻合（差值 5184001 秒） |
+| 是否滑动续期 | **否**（绝对过期） | 重复请求观察 `Set-Cookie`，服务端不再重签 |
+| 是否绑定 User-Agent | **否** | 同一 cookie 用 5 种 UA（含无 UA / curl / Linux Chrome）请求 `/user/me` 均 `code=0` |
+| 是否绑定来源 IP | **否** | 直连 vs 经代理（出口 IP 不同）均 `code=0` |
+| 配套 cookie | `cloudreve_observer`（`Max-Age=86400`，**1 天**）、`cloudreve_send`（`Max-Age=2678400`，31 天） | 由响应头下发，见 §0.3 |
+
+**🔑🔑 匿名访问也会签发 cookie（极易踩）**
 
 站点对**未登录**的请求同样下发 `cloudreve-session`，而且**每次请求都换新的**：
 
@@ -346,22 +342,15 @@ base64url( "<签发 Unix 秒>|<载荷>|<24 字节 HMAC>" )
 ```
 
 ⇒ **「cookie 存在」与「cookie 签发时间很新」都 不能 证明已登录。**
+判定会话是否有效**只能**实际请求一次需登录的端点（如 `GET /user/me`）看是否 `code=0`；
+只看 cookie 的有无或时间戳会得到错误的乐观结论。
 
-这个性质会造就一类**静默失败**：把匿名 cookie 当成登录态存进 secret，
-脚本日志显示「剩余 60 天，健康」，实际每次请求都 `401 Login required`，
-直到 60 天后（或有人主动查看）才会发现。
+**关于「必须全量 cookie」的适用条件**
 
-**因此：任何依赖会话的方案都必须实际打一次 `GET /user/me` 验活**，不能只看 cookie 的时间戳。
-本仓库的两个工具都已按此实现：
-- `check-session.mjs`：巡检时验活，判为「已失效」而非「健康」
-- `tools/refresh-session.mjs`：逐个 Firefox profile 验活，挑出真正的登录态；
-  没有一份是登录态时**拒绝输出**（且不打印完整 cookie，避免误粘贴）
-
-**⚠️ 关于「必须全量 cookie」的更正（2026-10-07）**
-
-§0.3 的 cookie 对照表（只有 session → `41701`）描述的是**手工构造请求、且不接收 41700 下发的 cookie** 的情形。
-本仓库脚本用 cookieJar 自动吸收每次响应下发的 cookie，**只提供 `cloudreve-session` 即可跑通全链路**（已端到端实测）。
-两者不矛盾：区别在于「是否吸收 41700 响应下发的 `cloudreve_observer`」。
+§0.3 的 cookie 对照表（只有 session → `41701`）成立于**手工构造请求、且不接收 41700 响应下发的 cookie** 的情形。
+若客户端会保存每次响应下发的 cookie（浏览器、http 客户端 cookie jar 的默认行为），
+则只需提供 `cloudreve-session`：`cloudreve_observer` 由 41700 响应补发后即被持有。
+两者不矛盾，区别在于**是否吸收 41700 下发的 `cloudreve_observer`**。
 
 ---
 

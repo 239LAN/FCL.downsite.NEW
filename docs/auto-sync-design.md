@@ -80,12 +80,20 @@ GHA workflow
 
 - 由工作流的 `schedule`（cron 按 UTC 编写）与 `workflow_dispatch` 手动触发；另有 `concurrency` 防重入。具体时间点见 `.github/workflows/auto-sync.yml`。
 - **登录凭据**以仓库 Secrets 注入（`H1111_SESSION`），只在需要时读取；probe job 的会话巡检会读它做只读检查。
-- **登录方式（2026-10-07 起改为会话 cookie）**：站点把**登录**改成交互式验证（人眼点选/输入字符），密码登录无法自动化。方案改为：
+- **登录方式（2026-10-07 起改为会话 cookie）**：站点把**登录**改成交互式验证（人眼点选/输入/拖滑块），密码登录无法自动化。方案改为：
   - 人工登录一次 → 取得 `cloudreve-session` → 存进 secret `H1111_SESSION` → 脚本 `loginWithSession()` 复用它
   - 实测依据：该 cookie **60 天**有效、**不滑动续期**、**不绑定 UA/IP**；取直链 `required.interactive=0`，仍只要 PoW
   - 只用 `cloudreve-session` 即可走完全链路；`cloudreve_observer`（1 天）由 `41700` 响应自动下发并被 cookieJar 吸收
   - `H1111_USER` / `H1111_PASSWORD` **保留作回退**（站点若改回密码登录可直接复用，无需改代码）
-  - 协议细节见 [`huang1111-api-notes.md`](huang1111-api-notes.md) §0.8
+  - 协议细节见 [`huang1111-api-notes.md`](huang1111-api-notes.md) §0.8 / §0.9
+  - **两个由此衍生的实现决策**（协议本身没要求，是为了防坑）：
+    1. **必须实测验活**：站点对匿名访问也签发 cookie 且每次换新，故「cookie 很新」不能证明已登录。
+       只看时间戳会把匿名 cookie 当成健康登录态存进 secret，然后静默 401 一整个月。
+       故 `check-session.mjs` 与 `tools/refresh-session.mjs` 都实际打一次 `GET /user/me` 判定。
+    2. **必须清洗粘贴脏值**：配置 secret 是整条链路唯一的人工步骤，从 DevTools 复制极易带上
+       `cloudreve-session=` 前缀、引号、尾随换行。脏值会造成 401，而报错只会说「会话已失效」，
+       用户想不到是多粘了字符。故 `session.mjs` 提供 `normalizeSession()`，在 `config.mjs`（环境变量入口）
+       与 `loginWithSession()`（传值入口）统一清洗。
 - **会话到期提醒**：`check-session.mjs` 在 probe job 里运行（只读、不登录），
   离线推算到期时间 + 实际打一次 `GET /user/me` 验活；剩余 **30 / 10 / 1 天**、**已失效**、
   或**未配置 `H1111_SESSION`** 时开 GitHub Issue（会被 GitHub 邮件推送给仓库所有者，故人在学校也能收到）。
@@ -97,7 +105,7 @@ GHA workflow
   - 整条链路按次重试（`RETRY.VERIFY_ATTEMPTS`），`41702` 限流按 `retry_after` 退避
   - PoW 求解为纯 WebCrypto（与前端 WebCrypto 回退路径同算法），**单线程**，带进度日志与硬超时
   - ⚠️ 验证链路本身需要全量 cookie，但脚本用 cookieJar 自动吸收服务端下发的 cookie，
-    故**只需提供 `cloudreve-session`**（详见 [`huang1111-api-notes.md`](huang1111-api-notes.md) §0.8 末的更正说明）
+    故**只需提供 `cloudreve-session`**（详见 [`huang1111-api-notes.md`](huang1111-api-notes.md) §0.9 末的适用条件说明）
   - 协议细节与被否决的旧方案见 [`huang1111-api-notes.md`](huang1111-api-notes.md) §0.3 / §0.4b / §0.7
 
 ### 3.3 软件映射表
