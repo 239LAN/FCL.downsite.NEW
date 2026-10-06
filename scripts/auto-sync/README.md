@@ -64,10 +64,15 @@
 
 ```powershell
 # 1. 在 Firefox 里登录 https://pan.huang1111.cn （完成点选/输入/滑块验证）
-# 2. 提取会话并复制到剪贴板
+#    ⚠ 确认页面右上角显示你的用户名，再往下做
+# 2. 提取会话并复制到剪贴板（会自动验活，不是登录态就拒绝输出）
 node scripts/auto-sync/tools/refresh-session.mjs
 # 3. 粘贴到 GitHub → Settings → Secrets → H1111_SESSION
 ```
+
+> ⚠️ **「cookie 很新」不等于「已登录」**：站点对**匿名访问**也会签发 `cloudreve-session`，
+> 而且每次请求都换新的。所以别看时间戳，要看脚本的「验活：✅ 服务端确认已登录」那一行。
+> 若脚本报「这份 cookie 是匿名的」，说明浏览器里其实没登录成功（或被退登了）。
 
 > 60 天到期后同步会失败。`check-session.mjs` 会在**剩余 30 / 10 / 1 天**、**已失效**、
 > 以及**压根没配 `H1111_SESSION`** 时自动开一个 GitHub Issue 提醒（GitHub 会发邮件），

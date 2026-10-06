@@ -1,23 +1,30 @@
 // manual-sync.mjs — 线路1 本地交互式手动同步（临时工具，放在 .tmp/，不参与 GHA）
 //
 // 与 GHA 的关系：复用 scripts/auto-sync 的正式实现，逻辑完全同源 ——
-//   · h1api.mjs  → 登录 / captcha policy v2 验证链路 / 离线下载 / 取直链
-//   · sync.mjs   → syncVersion / updateIndex / verifySyncedData / pruneSoftware / commitSoftware / push
+//   · h1api.mjs    → 会话登录 / captcha policy v2 验证链路 / 离线下载 / 取直链
+//   · session.mjs  → 会话 cookie 解析与寿命判定
+//   · sync.mjs     → syncVersion / updateIndex / verifySyncedData / pruneSoftware / commitSoftware / push
 // 与 GHA 唯一的区别：版本候选由你在 Release 列表中手动选择，而非按 index.json 基线自动判定。
 //
 // 用法：node .tmp/manual-sync.mjs
-// 流程：仓库地址 → huang1111 账号密码 →（未收录仓库时补充参数）→ 分页浏览 Release 并选择
+// 流程：仓库地址 → 会话 cookie（自动读 Firefox / 可用 H1111_SESSION 覆盖）
+//       →（未收录仓库时补充参数）→ 分页浏览 Release 并选择
 //       （n/p 翻页、more 加载更早、数字=全局序号多选（可跨页）、all=全选已加载、q=退出）
 //       → 已同步版本询问「强制重跑 / 跳过」→ 选择 git 操作 → 确认 → 登录并同步
 //
 // 说明：
+//   · ⚠ 站点自 2026-10-07 起对**登录**启用交互式验证（人眼点选/输入/拖滑块），
+//     **账号密码登录已无法自动化** → 本工具与 GHA 一样改用「会话 cookie」。
+//     默认自动从 Firefox 读取，免去手工粘贴；也可设 H1111_SESSION 直接指定。
 //   · 凭据只驻留内存，不落盘；可选环境变量 GITHUB_TOKEN 可提高 GitHub API 限额
 //   · 未收录仓库的补充参数仅本次运行使用，不写入 softwares.json
 //   · 同步完成后的 git 操作三选一：a=提交+推送（完整 GHA 流程）/ c=仅本地提交 / n=不提交
 
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, copyFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { emitKeypressEvents } from 'node:readline';
+import { DatabaseSync } from 'node:sqlite';
 
 import * as h1 from '../scripts/auto-sync/h1api.mjs';
 import {
@@ -25,6 +32,9 @@ import {
   parseDataSourceIndex, versionKnown, versionFromTag, compareVersionsDescending, fetchReleasesPage,
 } from '../scripts/auto-sync/lib.mjs';
 import { Logger, errText } from '../scripts/auto-sync/logger.mjs';
+import {
+  sessionInfo, maskSession, fmtUnixCST, fmtRemaining,
+} from '../scripts/auto-sync/session.mjs';
 import {
   syncVersion, updateIndex, verifySyncedData, pruneSoftware, commitSoftware, push,
 } from '../scripts/auto-sync/sync.mjs';
@@ -290,6 +300,129 @@ function parseSelection(text, max) {
   return out.size ? { quit: false, items: [...out].sort((x, y) => x - y) } : null;
 }
 
+// ============================ 会话 cookie ============================
+/**
+ * 取得 huang1111 会话 cookie。优先级：
+ *   ① 环境变量 H1111_SESSION（便于脚本化、或复用 GHA 的 secret 值）
+ *   ② 自动从 Firefox 的 cookie 库读取（推荐，免手工粘贴）
+ *   ③ 交互式粘贴（兜底）
+ *
+ * ⚠ 读 Firefox 库时必须把 cookies.sqlite 连同 -wal / -shm 一起复制：
+ *   Firefox 运行时是 WAL 模式，最近的写入还在 -wal 里，只复制主库会读到过期数据
+ *   （实测过：会把刚登录的有效会话误判成无效）。
+ *
+ * 返回 { value, source, info }；取不到时返回 null（调用方决定是否退出）。
+ */
+function listFirefoxProfiles() {
+  const appdata = process.env.APPDATA;
+  if (!appdata) return [];
+  const iniPath = join(appdata, 'Mozilla', 'Firefox', 'profiles.ini');
+  if (!existsSync(iniPath)) return [];
+  const ini = readFileSync(iniPath, 'utf8');
+  const out = [];
+  for (const s of ini.split(/^\[/m).slice(1)) {
+    if (!/^Profile\d+\]/.test(s)) continue;
+    const get = (k) => new RegExp(`^${k}=(.*)$`, 'm').exec(s)?.[1]?.trim();
+    const p = get('Path');
+    if (!p) continue;
+    out.push({
+      name: get('Name') || p,
+      dir: get('IsRelative') === '0' ? p : join(appdata, 'Mozilla', 'Firefox', p),
+      isDefault: get('Default') === '1',
+    });
+  }
+  return out;
+}
+
+function readSessionFromProfile(profileDir) {
+  const dbPath = join(profileDir, 'cookies.sqlite');
+  if (!existsSync(dbPath)) return null;
+  const dir = mkdtempSync(join(tmpdir(), 'h1manual-'));
+  const tmp = join(dir, 'cookies.sqlite');
+  try {
+    for (const s of ['', '-wal', '-shm']) {
+      if (existsSync(dbPath + s)) copyFileSync(dbPath + s, tmp + s);
+    }
+    const d = new DatabaseSync(tmp, { readOnly: true });
+    const row = d.prepare(
+      `SELECT value FROM moz_cookies
+       WHERE name='cloudreve-session' AND host LIKE '%huang1111%'
+       ORDER BY LENGTH(path) DESC LIMIT 1`,
+    ).get();
+    d.close();
+    return row?.value || null;
+  } catch {
+    return null;
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* 清理失败无妨 */ }
+  }
+}
+
+async function resolveSession() {
+  // ① 环境变量
+  const fromEnv = (process.env.H1111_SESSION || '').trim();
+  if (fromEnv) {
+    const info = sessionInfo(fromEnv);
+    console.log(`→ 会话 cookie：来自环境变量 H1111_SESSION（${maskSession(fromEnv)}）`);
+    reportSession(info);
+    return fromEnv;
+  }
+  // ② Firefox
+  if (process.env.APPDATA) {
+    for (const p of listFirefoxProfiles()) {
+      const v = readSessionFromProfile(p.dir);
+      if (v) {
+        const info = sessionInfo(v);
+        console.log(`→ 会话 cookie：自动读取自 Firefox profile「${p.name}」${p.isDefault ? '（默认）' : ''}`);
+        reportSession(info);
+        if (!info.valid) {
+          const go = await askText('  ⚠ 该会话已过期，仍要使用吗？（y/N）：', { def: 'N' });
+          if (!/^y/i.test(go)) {
+            console.log('  请先在 Firefox 里重新登录 https://pan.huang1111.cn 后重跑本脚本。');
+            return null;
+          }
+        }
+        return v;
+      }
+    }
+    console.log('ℹ Firefox 各 profile 里都没找到 huang1111 会话。');
+  }
+  // ③ 手工粘贴
+  console.log('  请先在 Firefox 里登录 https://pan.huang1111.cn（完成交互式验证），然后二选一：');
+  console.log('    · 回车 → 自动重试读取 Firefox（登录后无需重启浏览器）');
+  console.log('    · 粘贴 cloudreve-session 的值 → 直接使用');
+  for (;;) {
+    const raw = await askText('  会话 cookie（回车重试读取 Firefox）：');
+    if (!raw.trim()) {
+      for (const p of listFirefoxProfiles()) {
+        const v = readSessionFromProfile(p.dir);
+        if (v) {
+          const info = sessionInfo(v);
+          console.log(`→ 读取成功（profile「${p.name}」）`);
+          reportSession(info);
+          return v;
+        }
+      }
+      console.log('  ⚠ 仍未读到，请确认已在 Firefox 中登录，或直接粘贴 cookie 值。');
+      continue;
+    }
+    const v = raw.replace(/^\s*cloudreve-session\s*=\s*/i, '').trim();
+    const info = sessionInfo(v);
+    if (!info.present) { console.log('  ⚠ 内容为空，重试。'); continue; }
+    reportSession(info);
+    return v;
+  }
+}
+
+/** 打印会话寿命，并对不可解析/已过期给出明确提示（不打印完整值）。 */
+function reportSession(info) {
+  if (info.parseable) {
+    console.log(`  签发 ${fmtUnixCST(info.issuedAt)}｜到期 ${fmtUnixCST(info.expiresAt)}（按实测 60 天推算）｜剩余 ${fmtRemaining(info.secondsLeft)}`);
+  } else {
+    console.log(`  ⚠ 无法解析签发时间：${info.reason}（仍会尝试使用）`);
+  }
+}
+
 // ============================ 执行同步（复用 GHA 逻辑） ============================
 const GIT_MODE_TEXT = {
   a: '提交 + 推送（完整 GHA 流程）',
@@ -297,11 +430,13 @@ const GIT_MODE_TEXT = {
   n: '不提交（只写文件）',
 };
 
-async function runSync({ sw, entries, todo, gitMode, user, password }) {
+async function runSync({ sw, entries, todo, gitMode, session }) {
   const phase = logger.child(`同步资源 id=${sw.softwareId}（${sw.githubRepo}）`);
   const loginScope = phase.child('登录 huang1111', { symbol: '▸', commit: false });
+  loginScope.line(`使用会话 cookie 认证（${maskSession(session)}）`);
   try {
-    await h1.login(user, password, loginScope);
+    // 与 GHA 同源：站点已对登录启用交互式验证，只能用会话 cookie（见 h1api.loginWithSession）
+    await h1.loginWithSession(session, loginScope);
     loginScope.close('✅ 登录成功', { body: false });
   } catch (e) {
     loginScope.close(`❌ 登录失败：${errText(e)}`, { kind: 'fail', body: false });
@@ -380,9 +515,16 @@ async function main() {
   }
   console.log(`→ 仓库：${repo}`);
 
-  // 2) huang1111 凭据
-  const user = await askText('请输入 huang1111 账号：');
-  const password = await askText('请输入 huang1111 密码（输入不回显）：', { mask: true });
+  // 2) huang1111 会话 cookie
+  // ⚠ 2026-10-07 起站点对**登录**启用交互式验证（人眼点选/输入/拖滑块），脚本无法自动登录，
+  //   故改为复用「浏览器里人工登录得到的会话 cookie」（与 GHA 走 H1111_SESSION 同一套机制）。
+  //   这里默认**自动从 Firefox 读取**，免去手工粘贴 160 字符的 cookie。
+  const session = await resolveSession();
+  if (!session) {
+    console.log('❌ 未能取得会话 cookie，已退出。');
+    process.exitCode = 1;
+    return;
+  }
 
   // 3) 软件配置（匹配 softwares.json，未收录则补充参数）
   let sw = findSoftware(repo);
@@ -524,7 +666,9 @@ async function main() {
   console.log(` 待同步版本：${todo.map((t) => t.version + (t.force ? '（强制重跑）' : '')).join('、')}`);
   if (skipped) console.log(` 跳过版本  ：${skipped} 个（已同步）`);
   console.log(` git 操作  ：${GIT_MODE_TEXT[gitMode]}`);
-  console.log(` 登录账号  ：${user}（登录需解 PoW，可能耗时数十秒）`);
+  const sInfo = sessionInfo(session);
+  console.log(` 登录方式  ：会话 cookie（${maskSession(session)}）`
+    + (sInfo.parseable ? `，剩余 ${fmtRemaining(sInfo.secondsLeft)}` : ''));
   console.log('==========================================');
   let confirm = '';
   try {
@@ -539,7 +683,7 @@ async function main() {
   }
 
   // 10) 执行
-  await runSync({ sw, entries, todo, gitMode, user, password });
+  await runSync({ sw, entries, todo, gitMode, session });
 }
 
 main().catch((e) => {
