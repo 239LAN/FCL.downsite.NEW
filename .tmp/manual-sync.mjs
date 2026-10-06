@@ -20,9 +20,8 @@ import { join } from 'node:path';
 import { emitKeypressEvents } from 'node:readline';
 
 import * as h1 from '../scripts/auto-sync/h1api.mjs';
-import { logger } from '../scripts/auto-sync/logger.mjs';
 import {
-  ROOT, SOFTWARES,
+  ctx, ROOT, SOFTWARES,
   parseDataSourceIndex, versionKnown, versionFromTag, compareVersionsDescending, fetchReleasesPage,
 } from '../scripts/auto-sync/lib.mjs';
 import {
@@ -297,59 +296,61 @@ const GIT_MODE_TEXT = {
 async function runSync({ sw, entries, todo, gitMode, user, password }) {
   console.log('\n==== 登录 huang1111 ====');
   try {
-    await h1.login(user, password, (m) => logger.log(m));
+    await h1.login(user, password, (m) => ctx.log(m));
   } catch (e) {
     console.log('❌ 登录失败：' + e.message);
     process.exitCode = 1;
     return;
   }
 
-  // 与 GHA 相同：本软件这段日志采集为 commit 正文
-  const body = logger.beginCapture();
-  logger.scope(`软件 id=${sw.softwareId}`);
+  // 与 GHA 相同：拦截 ctx.log，本软件这段日志作为 commit body
+  const swLog = [];
+  const origLog = ctx.log.bind(ctx);
+  ctx.log = (msg) => { swLog.push(msg); origLog(msg); };
 
   let failed = false;
   const synced = [];
   try {
     for (const item of todo) {
+      console.log(`\n══ 版本 ${item.version} ══`);
       try {
         const result = await syncVersion(sw, item.version, item.release);
         if (result) synced.push(result);
+        else ctx.log(`  ⚠ 版本 ${item.version} 无可用资产，跳过`);
       } catch (e) {
         failed = true;
-        logger.fail(`版本 ${item.version} 同步失败（按重试策略耗尽仍失败）：${e.message}`);
+        ctx.log(`  ❌ 版本 ${item.version} 同步失败（按重试策略耗尽仍失败）：${e.message}`);
       }
     }
 
     if (!synced.length) {
-      logger.warn('本次无成功同步的版本，不更新 index.json');
+      ctx.log('（本次无成功同步的版本，不更新 index.json）');
     } else {
       mkdirSync(join(ROOT, 'data', 'down', String(sw.softwareId)), { recursive: true });
       const indexPath = updateIndex(sw.softwareId, entries, synced);
-      logger.ok(`已更新 ${rel(indexPath)}（+${synced.length} 个版本）`);
+      ctx.log(`    ✅ 已更新 ${rel(indexPath)}（+${synced.length} 个版本）`);
       verifySyncedData(sw, synced);
       await pruneSoftware(sw);
 
       if (gitMode === 'n') {
-        logger.log('未提交（按选择 n）。数据文件已写入，可自行 git add / commit');
+        console.log('\nℹ 未提交（按选择 n）。数据文件已写入，可自行 git add / commit。');
       } else {
         const versionList = synced.map((s) => s.version).sort(compareVersionsDescending).join('&');
-        logger.log(`提交版本列表：${versionList}`);
-        const committed = commitSoftware(sw.softwareId, versionList, body);
+        ctx.log(`    提交版本列表：${versionList}`);
+        const committed = commitSoftware(sw.softwareId, versionList, swLog);
         if (committed && gitMode === 'a') {
-          logger.log('推送远程 …');
+          console.log('\n==== 推送远程 ====');
           push();
         } else if (committed) {
-          logger.log('已本地提交（未推送）。需要时可手动 git push');
+          console.log('\nℹ 已本地提交（未推送）。需要时可手动 git push。');
         }
       }
     }
   } catch (e) {
     failed = true;
-    logger.fail(e.message);
+    ctx.log(`❌ ${e.message}`);
   } finally {
-    logger.endScope();
-    logger.endCapture();
+    ctx.log = origLog;
   }
 
   console.log('\n==== 完成 ====');
