@@ -85,7 +85,7 @@
 import { webcrypto } from 'node:crypto';
 
 import { ENV, RETRY, TIMING, LIMIT } from './config.mjs';
-import { maskSession } from './session.mjs';
+import { maskSession, normalizeSession } from './session.mjs';
 
 const BASE = ENV.HOST + '/api/v3';
 const ORIGIN = ENV.HOST;
@@ -529,8 +529,13 @@ const SESSION_COOKIE = 'cloudreve-session';
  */
 export async function loginWithSession(sessionValue, log) {
   isLoggedIn = false;
-  const value = String(sessionValue || '').trim();
+  // 清洗常见脏值：连名字一起复制（cloudreve-session=xxx）、引号、尾随换行、前后空格。
+  // 实测这些脏值会造成 401，而报错只会说「会话已失效」—— 用户想不到是多粘了字符。
+  const value = normalizeSession(sessionValue);
   if (!value) throw new H1Error('未提供会话 cookie（H1111_SESSION 为空）');
+  if (value !== String(sessionValue ?? '').trim()) {
+    say(log, '（已自动清洗会话值中的多余前缀/引号/空白）', { body: false });
+  }
 
   // 覆盖式写入：会话值就是全部所需，不保留任何陈旧 cookie
   cookieJar.clear();

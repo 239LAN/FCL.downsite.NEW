@@ -56,13 +56,55 @@ export const SESSION_TTL_SECONDS =
 export const SESSION_BANDS = [30, 10, 1];
 
 /**
+ * 清洗用户提供的会话值，容忍常见的「复制粘贴脏值」。
+ *
+ * ⚠ 为什么必须做（实测 2026-10-07）：
+ *   从浏览器 DevTools 复制 cookie 时，最常见的失误是**连名字一起复制**
+ *   （`cloudreve-session=MTc5…`），其次是带引号、尾随换行、前后空格。
+ *   这些脏值直接当 cookie 用会构造出畸形请求 → 服务端 401，
+ *   而脚本只会报「会话已失效」—— 用户根本想不到是自己多粘了 18 个字符。
+ *   （实测：`cloudreve-session=<值>` 与 `cloudreve-session = <值>` 均会 401。）
+ *
+ * 处理：
+ *   · 去掉首尾空白（含 \r \n \t）
+ *   · 去掉 `cloudreve-session=` / `cloudreve-session = ` 前缀（不区分大小写）
+ *   · 去掉成对的引号（单/双）
+ *   · 若形如 `a=b; c=d`，取 cloudreve-session 那一段；否则取第一段
+ *
+ * @param {string} value 原始值
+ * @returns {string} 清洗后的值（可能是空串）
+ */
+export function normalizeSession(value) {
+  let s = String(value ?? '').trim();
+  if (!s) return '';
+
+  // 形如 "cloudreve-session=xxx; other=yyy" → 优先挑出 cloudreve-session 段
+  if (s.includes(';')) {
+    const parts = s.split(';').map((x) => x.trim()).filter(Boolean);
+    const hit = parts.find((p) => /^cloudreve-session\s*=/i.test(p));
+    if (hit) s = hit;
+    else if (parts.length) s = parts[0];
+  }
+
+  // 剥掉 `cloudreve-session=` / `cloudreve-session = ` 前缀
+  s = s.replace(/^cloudreve-session\s*=\s*/i, '').trim();
+
+  // 剥掉成对引号（DevTools 里"复制值"有时带引号）
+  if (s.length >= 2 && ((s.startsWith('"') && s.endsWith('"'))
+    || (s.startsWith("'") && s.endsWith("'")))) {
+    s = s.slice(1, -1).trim();
+  }
+  return s;
+}
+
+/**
  * 从会话 cookie 值里解出**签发时间**（Unix 秒）。
  *
  * 结构见文件头：base64url → `"<签发秒>|<载荷>|<HMAC>"`。
  * 解不出时返回 null（值损坏 / 被截断 / 根本不是这个 cookie）。
  */
 export function decodeSessionIssuedAt(value) {
-  const raw = String(value ?? '').trim();
+  const raw = normalizeSession(value);
   if (!raw) return null;
   // 长度下限：真实值是 base64(10位时间戳 + '|' + 载荷 + '|' + 24字节HMAC)，编码后远超此数。
   // 太短的值必然是坏的（实测：截断到 20 字符的 base64 仍能"解出"一个合理时间戳，
@@ -106,7 +148,7 @@ export function decodeSessionIssuedAt(value) {
  */
 export function sessionInfo(value, opts = {}) {
   const nowMs = Number.isFinite(opts.now) ? opts.now : Date.now();
-  const raw = String(value ?? '').trim();
+  const raw = normalizeSession(value);
   if (!raw) {
     return {
       present: false, parseable: false, valid: false,
@@ -143,7 +185,7 @@ export function sessionInfo(value, opts = {}) {
 
 /** 只显示首尾各若干字符，便于在日志里指认是哪一份 cookie 而不泄露完整值。 */
 export function maskSession(value) {
-  const s = String(value ?? '');
+  const s = normalizeSession(value);
   if (!s) return '（空）';
   if (s.length <= 16) return `${s.slice(0, 4)}…（共 ${s.length} 字符）`;
   return `${s.slice(0, 6)}…${s.slice(-6)}（共 ${s.length} 字符）`;

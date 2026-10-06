@@ -1,15 +1,21 @@
 // config.mjs — 线路1 自动同步：环境变量与全局常量
 // 仅从环境变量读凭据（GHA secret 注入 / 本地手动 export），仓库内不落任何凭据。
 
+import { normalizeSession } from './session.mjs';
+
 export const ENV = {
   // 网盘 API（默认线上源，测试可覆盖）
   HOST: (process.env.H1111_HOST || 'https://pan.huang1111.cn').replace(/\/+$/, ''),
   // ---- 凭据（两种，优先用会话）----
-  // ⚠ 2026-10-07 起站点把**登录**改成交互式验证（图形点选/输入字符，人眼专用），
+  // ⚠ 2026-10-07 起站点把**登录**改成交互式验证（图形点选/输入/拖滑块，人眼专用），
   //    密码登录无法自动化 → H1111_USER/PASSWORD 这条路**必然失败**，仅作站点改回时的回退。
   //    现在走 H1111_SESSION：人工登录一次拿到的 cloudreve-session cookie 值（实测 60 天有效）。
   //    如何取值与更新，见 scripts/auto-sync/README.md「会话 cookie」一节。
-  SESSION: process.env.H1111_SESSION || '',
+  //
+  // ⚠ 这里做 normalizeSession 清洗：从 DevTools 复制时极易带上 `cloudreve-session=` 前缀、
+  //    引号、尾随换行或前后空格，直接当 cookie 用会 401，而报错只说「会话已失效」——
+  //    用户根本想不到是多粘了字符。实测见 tools/refresh-session.mjs 与 _probe-paste-variants。
+  SESSION: normalizeSession(process.env.H1111_SESSION),
   USER: process.env.H1111_USER || '',
   PASSWORD: process.env.H1111_PASSWORD || '',
   // GitHub 相关：
